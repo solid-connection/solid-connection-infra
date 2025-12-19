@@ -1,0 +1,11 @@
+/environment/prod/secret.tfvars
+/environment/prod/.terraform
+/environment/prod/.terraform.lock.hcl
+/environment/prod/terraform.tfstate
+/environment/prod/terraform.tfstate.backup
+/environment/stage/secret.tfvars
+/environment/stage/.terraform
+/environment/stage/.terraform.lock.hcl
+inseong_accessKeys.csv
+solid-connection-server-2.pem
+.DS_Store
