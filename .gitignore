@@ -1,13 +1,16 @@
-/environment/prod/secret.tfvars
-/environment/prod/.terraform
-/environment/prod/.terraform.lock.hcl
-/environment/prod/terraform.tfstate
-/environment/prod/terraform.tfstate.backup
-/environment/stage/secret.tfvars
-/environment/stage/.terraform
-/environment/stage/.terraform.lock.hcl
-/environment/stage/terraform.tfstate
-/environment/stage/terraform.tfstate.backup
-inseong_accessKeys.csv
-solid-connection-server-2.pem
+# --- Terraform (모든 하위 폴더 적용) ---
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+
+# --- Secrets (보안상 절대 커밋 금지) ---
+*.pem
+*.csv
+*.json
+*_accessKeys.csv
+
+# --- IDE & OS ---
+.idea/
 .DS_Store
