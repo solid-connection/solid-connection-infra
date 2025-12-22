@@ -1,0 +1,3 @@
+[submodule "config/secrets"]
+	path = config/secrets
+	url = https://github.com/solid-connection/solid-connection-infra-secret.git
