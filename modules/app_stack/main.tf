@@ -27,6 +27,25 @@ resource "aws_security_group" "api_sg" {
   description = "Security Group for API Server"
   vpc_id      = var.vpc_id
 
+  dynamic "ingress" {
+    for_each = var.api_ingress_rules
+    content {
+      description = ingress.value.description
+      from_port   = ingress.value.from_port
+      to_port     = ingress.value.to_port
+      protocol    = ingress.value.protocol
+      cidr_blocks = ingress.value.cidr_blocks
+    }
+  }
+
+  # [Outbound] 모든 트래픽 허용
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
   tags = {
     Name = "solid-connection-server-${var.env_name}-sg"
   }
@@ -38,6 +57,17 @@ resource "aws_security_group" "db_sg" {
   description = "Security Group for RDS"
   vpc_id      = var.vpc_id
 
+  dynamic "ingress" {
+    for_each = var.db_ingress_rules
+    content {
+      description     = ingress.value.description
+      from_port       = ingress.value.from_port
+      to_port         = ingress.value.to_port
+      protocol        = ingress.value.protocol
+      security_groups = [aws_security_group.api_sg.id]
+    }
+  }
+
   tags = {
     Name = "solid-connection-${var.env_name}-db-sg"
   }
@@ -45,8 +75,8 @@ resource "aws_security_group" "db_sg" {
 
 # 3. CloudInit을 이용한 User Data 스크립트 구성
 data "cloudinit_config" "app_init" {
-  gzip          = true  # 압축하여 UserData 용량 제한(64KB) 극복
-  base64_encode = true  # EC2 UserData는 Base64 필수
+  gzip          = true
+  base64_encode = true
 
   # [Part 1] Docker 설치 스크립트
   part {
@@ -77,14 +107,13 @@ resource "aws_instance" "api_server" {
   key_name = var.key_name
   associate_public_ip_address = true
 
-  # User Data가 변경되면 인스턴스를 새로 만들 것인지 결정, true로 설정하면 스크립트 수정 시 기존 서버를 삭제하고 새 서버를 띄웁니다.
   user_data_base64 = data.cloudinit_config.app_init.rendered
   
   tags = {
     Name = "solid-connection-server-${var.env_name}"
   }
 
-  user_data_replace_on_change = false # true면 User Data 변경 시 인스턴스 교체
+  user_data_replace_on_change = false
 
   lifecycle {
     ignore_changes = [
@@ -137,7 +166,7 @@ resource "mysql_grant" "user_grants" {
 
   user       = each.key
   host       = "%"
-  database   = each.value.database
+  database   = each.value.database 
   privileges = each.value.privileges
 
   depends_on = [mysql_user.users]

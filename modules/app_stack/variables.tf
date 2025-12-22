@@ -1,5 +1,5 @@
 variable "env_name" { 
-    description = "환경 이름 (prod/stage)" 
+    description = "환경 이름"
 }
 
 variable "instance_type" { 
@@ -8,6 +8,27 @@ variable "instance_type" {
 
 variable "db_instance_class" { 
     description = "RDS 인스턴스 타입" 
+}
+
+variable "api_ingress_rules" {
+  description = "List of ingress rules for API Server"
+  type = list(object({
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    cidr_blocks = list(string)
+    description = string
+  }))
+}
+
+variable "db_ingress_rules" {
+  description = "List of ingress rules for DB Server"
+  type = list(object({
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    description = string
+  }))
 }
 
 # [DB 관련 추가 변수]
@@ -26,15 +47,15 @@ variable "db_password" {
 variable "additional_db_users" {
   description = "추가 DB 유저 설정 (비번, 대상 DB, 권한 목록)"
   type = map(object({
-    password   = string       # 유저 비밀번호
-    database   = string       # 권한을 줄 데이터베이스 이름
-    privileges = list(string) # 권한 목록
+    password   = string
+    database   = string
+    privileges = list(string)
   }))
   default   = {}
 }
 
 variable "db_engine_version" {
-  description = "MySQL 엔진 버전 (예: 8.0.35, 8.4.0)"
+  description = "MySQL 엔진 버전"
   type        = string
 }
 
@@ -63,7 +84,7 @@ variable "ami_id" {
 }
 
 variable "allowed_ssh_cidrs" {
-  description = "SSH 접속을 허용할 IP 대역 리스트 (개발자 IP)"
+  description = "SSH 접속을 허용할 IP 대역 리스트"
   type        = list(string)
 }
 
