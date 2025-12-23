@@ -1,0 +1,16 @@
+# --- Terraform (모든 하위 폴더 적용) ---
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfvars
+.terraform.lock.hcl
+
+# --- Secrets (보안상 절대 커밋 금지) ---
+*.pem
+*.csv
+*.json
+*_accessKeys.csv
+
+# --- IDE & OS ---
+.idea/
+.DS_Store
