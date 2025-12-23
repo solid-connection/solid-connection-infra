@@ -13,7 +13,6 @@ module "prod_stack" {
 
   # 키페어 및 접속 허용
   key_name          = var.key_name
-  allowed_ssh_cidrs = var.allowed_ssh_cidrs
   
   # 인스턴스 스펙
   instance_type     = var.server_instance_type
