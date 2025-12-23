@@ -74,11 +74,6 @@ variable "key_name" {
   type        = string
 }
 
-variable "allowed_ssh_cidrs" {
-  description = "Allowed SSH CIDR blocks"
-  type        = list(string)
-}
-
 variable "kms_key_arn" {
   description = "Existing KMS Key ARN for prod DB Encryption"
   type        = string
