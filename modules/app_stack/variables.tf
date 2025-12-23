@@ -83,11 +83,6 @@ variable "ami_id" {
   type        = string
 }
 
-variable "allowed_ssh_cidrs" {
-  description = "SSH 접속을 허용할 IP 대역 리스트"
-  type        = list(string)
-}
-
 variable "key_name" {
   description = "AWS 콘솔에 등록된 기존 EC2 Key Pair 이름"
   type        = string
