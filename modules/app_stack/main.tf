@@ -1,26 +1,3 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.0"
-    }
-    cloudinit = {
-      source  = "hashicorp/cloudinit"
-      version = "~> 2.3" 
-    }
-    mysql = {
-      source  = "petoju/mysql"
-      version = ">= 3.0"
-    }
-  }
-}
-
-provider "mysql" {
-  endpoint = "127.0.0.1:3306"
-  username = var.db_username
-  password = var.db_password
-}
-
 # 1. API Server용 보안 그룹 (SSH 연결 허용)
 resource "aws_security_group" "api_sg" {
   name        = "sc-${var.env_name}-api-sg"
@@ -88,7 +65,7 @@ data "cloudinit_config" "app_init" {
   # [Part 2] Nginx 설정 스크립트
   part {
     content_type = "text/x-shellscript"
-    content = templatefile("${path.module}/scripts/nginx_setup.tftpl", {
+    content = templatefile("${path.module}/scripts/nginx_setup.sh.tftpl", {
       domain_name = var.domain_name
       email       = var.cert_email
       conf_file_name = var.nginx_conf_name
