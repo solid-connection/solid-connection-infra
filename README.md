@@ -9,25 +9,28 @@ solid-connection-infra/
 │   └── secrets/              # 민감한 data 관리
 │       └── ...
 ├── modules/
-│   └── app_stack/            # [공통 모듈] API Server + RDS 정의
-│       ├── main.tf
+│   └── app_stack/            # [Prod/Stage 환경의 공통 모듈]
+│       ├── security_groups.tf
+│       ├── ec2.tf
+│       ├── rds.tf
+│       ├── s3.tf
 │       ├── variables.tf
 │       └── outputs.tf
 └── environments/
     ├── prod/                 # [Prod 환경]
     │   ├── main.tf
     │   ├── provider.tf
-    │   ├── variables.tf    
+    │   └── variables.tf    
     ├── stage/                # [Stage 환경]
     │   ├── main.tf
     │   ├── provider.tf
-    │   ├── variables.tf
+    │   └── variables.tf
     ├── load_test/            # [부하테스트 환경]
     │   ├── main.tf
     │   ├── provider.tf
-    │   ├── variables.tf
+    │   └── variables.tf
     └── monitoring/           # [Monitoring 환경]
         ├── main.tf
         ├── provider.tf
-        ├── variables.tf
+        └── variables.tf
 ```
