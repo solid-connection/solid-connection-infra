@@ -103,3 +103,33 @@ variable "s3_upload_bucket_name" {
   description = "Name of the upload S3 bucket"
   type        = string
 }
+
+variable "ssh_key_path" {
+  description = "Path to the SSH private key file for remote-exec"
+  type        = string
+}
+
+variable "work_dir" {
+  description = "Working directory for the application"
+  type        = string
+}
+
+variable "alloy_env_name" {
+  description = "Alloy Env Name"
+  type        = string
+}
+
+variable "redis_version" {
+  description = "Docker image tag for Redis"
+  type        = string
+}
+
+variable "redis_exporter_version" {
+  description = "Docker image tag for Redis Exporter"
+  type        = string
+}
+
+variable "alloy_version" {
+  description = "Docker image tag for Grafana Alloy"
+  type        = string
+}

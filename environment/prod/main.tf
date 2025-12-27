@@ -13,7 +13,7 @@ module "prod_stack" {
 
   # 키페어 및 접속 허용
   key_name          = var.key_name
-  
+
   # 인스턴스 스펙
   instance_type     = var.server_instance_type
   db_instance_class = var.db_instance_class
@@ -24,7 +24,7 @@ module "prod_stack" {
 
   # RDS 식별자 설정
   rds_identifier = var.rds_identifier
-  
+
   # DB 계정 정보
   db_username       = var.db_root_username
   db_password       = var.db_root_password
@@ -45,4 +45,16 @@ module "prod_stack" {
   # S3 버킷 이름 전달
   s3_default_bucket_name = var.s3_default_bucket_name
   s3_upload_bucket_name  = var.s3_upload_bucket_name
+
+  # ssh key 경로 전달
+  ssh_key_path = var.ssh_key_path
+
+  # Side Infra 관련 변수 전달
+  work_dir = var.work_dir
+  alloy_env_name = var.alloy_env_name
+  alloy_config_content = file("${path.root}/../../config/side-infra/config.alloy")
+
+  redis_version          = var.redis_version
+  redis_exporter_version = var.redis_exporter_version
+  alloy_version          = var.alloy_version
 }
