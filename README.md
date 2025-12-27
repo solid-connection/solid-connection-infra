@@ -6,10 +6,16 @@ solid-connection 서비스의 AWS, terraform 기반 IaC 레포지토리입니다
 ```
 solid-connection-infra/
 ├── config/
-│   └── secrets/              # 민감한 data 관리
-│       └── ...
+│   ├── secrets/              # 민감한 data 관리
+│   │   └── ...
+│   └── side-infra/           # [side infra 관련 설정]
+│       └── config.alloy
 ├── modules/
 │   └── app_stack/            # [Prod/Stage 환경의 공통 모듈]
+│       ├── scripts
+│       │   └── docker_setup.sh
+│       │   └── nginx_setup.sh.tftpl
+│       │   └── side_infra_setup.sh.tftpl
 │       ├── security_groups.tf
 │       ├── ec2.tf
 │       ├── rds.tf
