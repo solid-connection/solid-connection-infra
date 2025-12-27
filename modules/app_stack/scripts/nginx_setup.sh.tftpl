@@ -1,34 +1,25 @@
+#!/bin/bash
+
 set -e
 
-wait_for_apt_lock() {
-  echo "Checking for apt locks..."
-  while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
-        fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-        fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo "Waiting for apt lock..."
-    sleep 5
-  done
-  echo "Apt lock acquired."
-}
-
-# --- 변수 설정 ---
+# --- variables setting ---
 DOMAIN="${domain_name}"
 EMAIL="${email}"
 CONF_NAME="${conf_file_name}"
 
 echo "Start Nginx Setup for $DOMAIN with config file: $CONF_NAME"
 
-# 1. Nginx 및 Certbot 필수 패키지 설치
+# 1. Install necessary packages for Nginx and Certbot
 apt-get update
 apt-get install -y nginx python3 python3-venv libaugeas0
 
-# 2. Certbot 설치 (pip 이용)
+# 2. Install Certbot (using pip)
 python3 -m venv /opt/certbot/
 /opt/certbot/bin/pip install --upgrade pip
 /opt/certbot/bin/pip install certbot certbot-nginx
-ln -s /opt/certbot/bin/certbot /usr/bin/certbot
+ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
 
-# 3. SSL 인증서 발급 (비대화형 모드)
+# 3. Issue SSL certificate (Non-interactive mode)
 systemctl stop nginx
 
 certbot certonly --standalone \
@@ -39,7 +30,7 @@ certbot certonly --standalone \
 
 echo "Certificate obtained successfully."
 
-# 4. Nginx 설정 파일 작성
+# 4. Create Nginx configuration file
 cat <<EOF > /etc/nginx/sites-available/$CONF_NAME
 server {
     listen 80;
@@ -76,14 +67,14 @@ server {
 }
 EOF
 
-# 5. 심볼릭 링크 연결 및 기본 설정 삭제
+# 5. Create symbolic link and remove default configuration
 ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
 rm -f /etc/nginx/sites-enabled/default
 
-# 6. 자동 갱신 크론탭 등록
+# 6. Register auto-renewal cron job
 echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && certbot renew -q" | tee -a /etc/crontab > /dev/null
 
-# 7. Nginx 재시작
+# 7. Nginx restart
 nginx -t
 systemctl restart nginx
 

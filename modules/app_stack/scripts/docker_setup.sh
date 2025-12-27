@@ -1,13 +1,4 @@
-wait_for_apt_lock() {
-  echo "Checking for apt locks..."
-  while fuser /var/lib/dpkg/lock >/dev/null 2>&1 || \
-        fuser /var/lib/apt/lists/lock >/dev/null 2>&1 || \
-        fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-    echo "Waiting for apt lock..."
-    sleep 5
-  done
-  echo "Apt lock acquired."
-}
+#!/bin/bash
 
 # 1. 필수 패키지 설치
 apt-get update
