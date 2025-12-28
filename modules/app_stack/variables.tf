@@ -132,11 +132,6 @@ variable "alloy_env_name" {
   type        = string
 }
 
-variable "alloy_config_content" {
-  description = "Content of the alloy configuration file (Read from file)"
-  type        = string
-}
-
 variable "redis_version" {
   description = "Docker image tag for Redis"
   type        = string

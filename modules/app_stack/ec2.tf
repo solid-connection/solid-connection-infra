@@ -1,3 +1,15 @@
+data "aws_instance" "monitoring_server" {
+  filter {
+    name   = "tag:Name"
+    values = ["solid-connection-monitoring"]
+  }
+
+  filter {
+    name   = "instance-state-name"
+    values = ["running"]
+  }
+}
+
 # CloudInit을 이용한 User Data 스크립트 구성
 data "cloudinit_config" "app_init" {
   gzip          = true
@@ -89,7 +101,9 @@ resource "null_resource" "update_side_infra" {
     script_hash = sha256(templatefile("${path.module}/scripts/side_infra_setup.sh.tftpl", {
       work_dir               = var.work_dir
       alloy_env_name         = var.alloy_env_name
-      alloy_config_content   = var.alloy_config_content
+      alloy_config_content   = templatefile("${path.module}/../../config/side-infra/config.alloy.tftpl", {
+        loki_ip = data.aws_instance.monitoring_server.private_ip
+      })
       redis_version          = var.redis_version
       redis_exporter_version = var.redis_exporter_version
       alloy_version          = var.alloy_version
@@ -107,7 +121,9 @@ resource "null_resource" "update_side_infra" {
     content = templatefile("${path.module}/scripts/side_infra_setup.sh.tftpl", {
       work_dir               = var.work_dir
       alloy_env_name         = var.alloy_env_name
-      alloy_config_content   = var.alloy_config_content
+      alloy_config_content   = templatefile("${path.module}/../../config/side-infra/config.alloy.tftpl", {
+        loki_ip = data.aws_instance.monitoring_server.private_ip
+      })
       redis_version          = var.redis_version
       redis_exporter_version = var.redis_exporter_version
       alloy_version          = var.alloy_version

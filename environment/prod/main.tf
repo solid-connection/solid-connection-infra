@@ -52,7 +52,6 @@ module "prod_stack" {
   # Side Infra 관련 변수 전달
   work_dir = var.work_dir
   alloy_env_name = var.alloy_env_name
-  alloy_config_content = file("${path.root}/../../config/side-infra/config.alloy")
 
   redis_version          = var.redis_version
   redis_exporter_version = var.redis_exporter_version
