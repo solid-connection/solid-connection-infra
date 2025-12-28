@@ -9,13 +9,23 @@ solid-connection-infra/
 │   └── secrets/              # 민감한 data 관리
 │       └── ...
 ├── modules/
-│   └── app_stack/            # [Prod/Stage 환경의 공통 모듈]
-│       ├── security_groups.tf
-│       ├── ec2.tf
-│       ├── rds.tf
+│   ├── app_stack/            # [Prod/Stage 환경의 공통 모듈]
+│   │   ├── security_groups.tf
+│   │   ├── ec2.tf
+│   │   ├── rds.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   └── shared_resources/      # [global 환경의 공유 자원 모듈]
+│       ├── src/
+│       │   ├── img_resizing/
+│       │   │   └── index.js
+│       │   └── thumbnail/
+│       │       └── index.js
+│       ├── cloudfront.tf
+│       ├── lambda.tf
+│       ├── provider.tf
 │       ├── s3.tf
-│       ├── variables.tf
-│       └── outputs.tf
+│       └── variables.tf
 └── environments/
     ├── prod/                 # [Prod 환경]
     │   ├── main.tf
@@ -29,7 +39,11 @@ solid-connection-infra/
     │   ├── main.tf
     │   ├── provider.tf
     │   └── variables.tf
-    └── monitoring/           # [Monitoring 환경]
+    ├── monitoring/            # [부하테스트 환경]
+    │   ├── main.tf
+    │   ├── provider.tf
+    │   └── variables.tf
+    └── global/                # [global 공유 환경]
         ├── main.tf
         ├── provider.tf
         └── variables.tf
