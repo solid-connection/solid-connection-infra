@@ -103,14 +103,3 @@ variable "nginx_conf_name" {
   description = "Nginx config filename"
   type        = string
 }
-
-# [S3 버킷 관련 변수]
-variable "s3_default_bucket_name" {
-  description = "Name of the default S3 bucket"
-  type        = string
-}
-
-variable "s3_upload_bucket_name" {
-  description = "Name of the upload S3 bucket"
-  type        = string
-}

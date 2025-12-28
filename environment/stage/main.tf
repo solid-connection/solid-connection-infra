@@ -41,8 +41,4 @@ module "stage_stack" {
   domain_name = var.domain_name
   cert_email  = var.cert_email
   nginx_conf_name = var.nginx_conf_name
-
-  # S3 버킷 이름 전달
-  s3_default_bucket_name = var.s3_default_bucket_name
-  s3_upload_bucket_name  = var.s3_upload_bucket_name
 }
