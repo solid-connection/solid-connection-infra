@@ -4,6 +4,7 @@
 *.tfstate.backup
 *.tfvars
 .terraform.lock.hcl
+modules/shared_resources/dist/*.zip
 
 # --- Secrets (보안상 절대 커밋 금지) ---
 *.pem
