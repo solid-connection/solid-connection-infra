@@ -6,7 +6,7 @@ data "cloudinit_config" "app_init" {
   # [Part 1] Docker 설치 스크립트
   part {
     content_type = "text/x-shellscript"
-    content      = file("${path.module}/scripts/docker_setup.sh")
+    content      = file("${path.module}/../common/scripts/docker_setup.sh")
     filename     = "1_docker_install.sh"
   }
 
