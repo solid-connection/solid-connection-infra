@@ -1,13 +1,13 @@
-variable "env_name" { 
-    description = "환경 이름"
+variable "env_name" {
+  description = "환경 이름 (prod/stage)"
 }
 
-variable "instance_type" { 
-    description = "EC2 인스턴스 타입" 
+variable "instance_type" {
+  description = "EC2 인스턴스 타입"
 }
 
-variable "db_instance_class" { 
-    description = "RDS 인스턴스 타입" 
+variable "db_instance_class" {
+  description = "RDS 인스턴스 타입"
 }
 
 variable "api_ingress_rules" {
@@ -74,8 +74,8 @@ variable "kms_key_arn" {
   type        = string
 }
 
-variable "vpc_id" { 
-    description = "배포할 VPC ID" 
+variable "vpc_id" {
+  description = "배포할 VPC ID"
 }
 
 variable "ami_id" {
@@ -112,5 +112,37 @@ variable "s3_default_bucket_name" {
 
 variable "s3_upload_bucket_name" {
   description = "Name of the upload S3 bucket"
+  type        = string
+}
+
+# [Remote SSH용 변수]
+variable "ssh_key_path" {
+  description = "Path to the SSH private key file for remote-exec"
+  type        = string
+}
+
+# [Side Infrastructure 관련 변수]
+variable "work_dir" {
+  description = "Working directory for the application"
+  type        = string
+}
+
+variable "alloy_env_name" {
+  description = "Alloy Env Name"
+  type        = string
+}
+
+variable "redis_version" {
+  description = "Docker image tag for Redis"
+  type        = string
+}
+
+variable "redis_exporter_version" {
+  description = "Docker image tag for Redis Exporter"
+  type        = string
+}
+
+variable "alloy_version" {
+  description = "Docker image tag for Grafana Alloy"
   type        = string
 }

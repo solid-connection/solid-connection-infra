@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -e
+
+# --- Variable Configuration ---
+WORK_DIR='${work_dir}'
+ALLOY_ENV_NAME='${alloy_env_name}' # production or dev
+ALLOY_CONFIG_CONTENT='${alloy_config_content}'
+
+REDIS_VERSION='${redis_version}'
+REDIS_EXPORTER_VERSION='${redis_exporter_version}'
+ALLOY_VERSION='${alloy_version}'
+
+echo "Start Side Infrastructure Setup..."
+
+# 1. Create working and log directories
+mkdir -p "$WORK_DIR/config/side-infra"
+mkdir -p "$WORK_DIR/logs"
+# Set log directory permissions (Shared by App and Alloy)
+chmod 777 "$WORK_DIR/logs"
+chown -R ubuntu:ubuntu "$WORK_DIR"
+
+# 2. Create Alloy configuration file
+cat <<EOF > "$WORK_DIR/config/side-infra/config.alloy"
+$ALLOY_CONFIG_CONTENT
+EOF
+
+# 3. Create docker-compose.yml for side infrastructure
+cat <<EOF > "$WORK_DIR/docker-compose.side-infra.yml"
+version: '3.8'
+
+services:
+  redis:
+    image: redis:$REDIS_VERSION
+    container_name: redis
+    network_mode: "host"
+    restart: always
+    command: redis-server --bind 127.0.0.1 --protected-mode yes
+
+  redis-exporter:
+    image: oliver006/redis_exporter:$REDIS_EXPORTER_VERSION
+    container_name: redis-exporter
+    environment:
+      REDIS_ADDR: "127.0.0.1:6379"
+    depends_on:
+      - redis
+    network_mode: "host"
+    restart: always
+
+  alloy:
+    image: grafana/alloy:$ALLOY_VERSION
+    container_name: alloy
+    volumes:
+      - ./logs:/var/log/spring:ro
+      - ./config/side-infra/config.alloy:/etc/alloy/config.alloy:ro
+    environment:
+      - ALLOY_ENV=$ALLOY_ENV_NAME
+    network_mode: "host"
+    restart: always
+
+EOF
+
+# 4. Start containers
+cd "$WORK_DIR"
+
+# Cleanup potential conflicts where ports might be locked by other Docker Compose instances.
+# 'rm -f' is executed first to ensure cleanup of any lingering network resources attached to existing containers.
+echo "Cleanup: Force removing leftover containers..."
+docker rm -f redis redis-exporter alloy || true
+
+echo "Stopping previous containers if running..."
+docker compose -f docker-compose.side-infra.yml down || true
+
+echo "Starting containers..."
+docker compose -f docker-compose.side-infra.yml up -d
+
+echo "Side Infrastructure Setup Complete!"
