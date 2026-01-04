@@ -56,7 +56,7 @@ variable "resizing_img_func_layers" {
 }
 
 variable "thumbnail_generating_func_layers" {
-  description = "Layers For Image Resizing func"
+  description = "Layers For Thumbnail Generating func"
   type = list(string)
 }
 
