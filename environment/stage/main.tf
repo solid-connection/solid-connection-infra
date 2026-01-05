@@ -13,9 +13,9 @@ module "stage_stack" {
 
   # 키페어 및 접속 허용
   key_name          = var.key_name
-
+  
   # 인스턴스 스펙
-  instance_type     = var.server_instance_type
+  instance_type     = var.server_instance_type  
   db_instance_class = var.db_instance_class
 
   # 보안 그룹 규칙
@@ -24,7 +24,7 @@ module "stage_stack" {
 
   # RDS 식별자 설정
   rds_identifier = var.rds_identifier
-
+  
   # DB 계정 정보
   db_username       = var.db_root_username
   db_password       = var.db_root_password
@@ -41,10 +41,6 @@ module "stage_stack" {
   domain_name = var.domain_name
   cert_email  = var.cert_email
   nginx_conf_name = var.nginx_conf_name
-
-  # S3 버킷 이름 전달
-  s3_default_bucket_name = var.s3_default_bucket_name
-  s3_upload_bucket_name  = var.s3_upload_bucket_name
 
   # ssh key 경로 전달
   ssh_key_path = var.ssh_key_path

@@ -94,16 +94,6 @@ variable "nginx_conf_name" {
   type        = string
 }
 
-variable "s3_default_bucket_name" {
-  description = "Name of the default S3 bucket"
-  type        = string
-}
-
-variable "s3_upload_bucket_name" {
-  description = "Name of the upload S3 bucket"
-  type        = string
-}
-
 variable "ssh_key_path" {
   description = "Path to the SSH private key file for remote-exec"
   type        = string

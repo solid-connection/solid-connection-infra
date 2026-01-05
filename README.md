@@ -11,17 +11,27 @@ solid-connection-infra/
 │   └── side-infra/           # [side infra 관련 설정]
 │       └── config.alloy
 ├── modules/
-│   └── app_stack/            # [Prod/Stage 환경의 공통 모듈]
-│       ├── scripts
-│       │   └── docker_setup.sh
-│       │   └── nginx_setup.sh.tftpl
-│       │   └── side_infra_setup.sh.tftpl
-│       ├── security_groups.tf
-│       ├── ec2.tf
-│       ├── rds.tf
+│   ├── app_stack/            # [Prod/Stage 환경의 공통 모듈]
+│   │   ├── scripts
+│   │   │   ├── docker_setup.sh
+│   │   │   ├── nginx_setup.sh.tftpl
+│   │   │   └── side_infra_setup.sh.tftpl
+│   │   ├── security_groups.tf
+│   │   ├── ec2.tf
+│   │   ├── rds.tf
+│   │   ├── variables.tf
+│   │   └── outputs.tf
+│   └── shared_resources/      # [global 환경의 공유 자원 모듈]
+│       ├── src/
+│       │   ├── img_resizing/
+│       │   │   └── index.js
+│       │   └── thumbnail/
+│       │       └── index.js
+│       ├── cloudfront.tf
+│       ├── lambda.tf
+│       ├── provider.tf
 │       ├── s3.tf
-│       ├── variables.tf
-│       └── outputs.tf
+│       └── variables.tf
 └── environments/
     ├── prod/                 # [Prod 환경]
     │   ├── main.tf
@@ -35,7 +45,11 @@ solid-connection-infra/
     │   ├── main.tf
     │   ├── provider.tf
     │   └── variables.tf
-    └── monitoring/           # [Monitoring 환경]
+    ├── monitoring/           # [모니터링 환경]
+    │   ├── main.tf
+    │   ├── provider.tf
+    │   └── variables.tf
+    └── global/               # [global 공유 환경]
         ├── main.tf
         ├── provider.tf
         └── variables.tf
