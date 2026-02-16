@@ -29,12 +29,6 @@ variable "private_ip" {
   type = string
 }
 
-variable "ebs_volume_size" {
-  description = "Disk size for Prometheus TSDB (GB)"
-  type        = number
-  default     = 50
-}
-
 variable "domain_name" {
   description = "Domain name for Grafana dashboard (e.g., monitor.example.com)"
   type        = string
