@@ -42,7 +42,14 @@ module "stage_stack" {
   cert_email  = var.cert_email
   nginx_conf_name = var.nginx_conf_name
 
-  # S3 버킷 이름 전달
-  s3_default_bucket_name = var.s3_default_bucket_name
-  s3_upload_bucket_name  = var.s3_upload_bucket_name
+  # ssh key 경로 전달
+  ssh_key_path = var.ssh_key_path
+
+  # Side Infra 관련 변수 전달
+  work_dir = var.work_dir
+  alloy_env_name = var.alloy_env_name
+
+  redis_version          = var.redis_version
+  redis_exporter_version = var.redis_exporter_version
+  alloy_version          = var.alloy_version
 }

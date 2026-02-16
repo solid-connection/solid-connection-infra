@@ -1,3 +1,15 @@
+data "aws_instance" "monitoring_ec2" {
+  filter {
+    name   = "tag:Name"
+    values = ["solid-connection-monitoring"]
+  }
+
+  filter {
+    name   = "instance-state-name"
+    values = ["running"]
+  }
+}
+
 # 1. API Server용 보안 그룹 (SSH 연결 허용)
 resource "aws_security_group" "api_sg" {
   name        = "sc-${var.env_name}-api-sg"
@@ -13,6 +25,15 @@ resource "aws_security_group" "api_sg" {
       protocol    = ingress.value.protocol
       cidr_blocks = ingress.value.cidr_blocks
     }
+  }
+
+  ingress {
+    description = "Allow 8081 from EC2: (${data.aws_instance.monitoring_ec2.tags.Name})"
+    from_port   = 8081
+    to_port     = 8081
+    protocol    = "tcp"
+
+    cidr_blocks = ["${data.aws_instance.monitoring_ec2.private_ip}/32"]
   }
 
   # [Outbound] 모든 트래픽 허용
