@@ -4,7 +4,7 @@ solid-connection 서비스의 AWS 인프라를 Terraform으로 관리하는 IaC 
 
 ## 디렉토리 구조
 
-```
+```text
 solid-connection-infra/
 ├── config/
 │   ├── secrets/              # git submodule (solid-connection-infra-secret)
@@ -46,7 +46,7 @@ S3 Remote Backend를 사용하며, Terraform 1.10+의 S3 네이티브 락 기능
 
 ## 협업 워크플로우
 
-```
+```text
 feature/* 브랜치 Push
     → PR 생성
     → terraform plan 자동 실행 (GitHub Actions)
@@ -67,7 +67,8 @@ feature/* 브랜치 Push
 개발자는 읽기 전용 IAM Policy가 부여된 자격증명을 발급받아 사용합니다:
 - AWS read-only 권한 (`Describe*`, `List*`, `Get*`)
 - S3 `GetObject` on `solid-connection-tfstate` (state 읽기)
-- S3 `PutObject` / `DeleteObject` 미부여 (state 쓰기 차단 → apply 불가)
+- S3 `PutObject` / `DeleteObject` on `*.tflock` 허용 (plan 시 네이티브 락 획득/해제)
+- S3 `PutObject` / `DeleteObject` on `*.tfstate` 미부여 (state 쓰기 차단 → apply 불가)
 
 `~/.aws/credentials` 또는 환경 변수로 설정:
 ```bash
