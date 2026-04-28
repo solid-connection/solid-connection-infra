@@ -192,6 +192,11 @@ jobs:
           /usr/local/sessionmanagerplugin/bin/session-manager-plugin --version
       - name: Start SSM Tunnel to RDS
         run: |
+          echo "=== session-manager-plugin 진단 ==="
+          which session-manager-plugin || echo "NOT IN PATH"
+          session-manager-plugin --version || echo "VERSION CHECK FAILED"
+          echo "===================================="
+
           EC2_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=solid-connection-server-prod" "Name=instance-state-name,Values=running" \
             --query 'Reservations[0].Instances[0].InstanceId' \
