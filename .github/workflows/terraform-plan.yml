@@ -184,8 +184,10 @@ jobs:
           terraform_wrapper: false
       - name: Install Session Manager Plugin
         run: |
-          curl -sL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o session-manager-plugin.deb
-          sudo dpkg -i session-manager-plugin.deb
+          curl -sL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/linux_64bit/session-manager-plugin" \
+            -o /tmp/session-manager-plugin
+          sudo install -m 755 /tmp/session-manager-plugin /usr/local/bin/session-manager-plugin
+          session-manager-plugin --version
       - name: Start SSM Tunnel to RDS
         run: |
           EC2_ID=$(aws ec2 describe-instances \
