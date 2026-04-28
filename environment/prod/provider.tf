@@ -1,4 +1,6 @@
 terraform {
+  required_version = ">= 1.10.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -8,6 +10,14 @@ terraform {
       source  = "petoju/mysql"
       version = ">= 3.0"
     }
+  }
+
+  backend "s3" {
+    bucket       = "solid-connection-tfstate"
+    key          = "env/prod/terraform.tfstate"
+    region       = "ap-northeast-2"
+    use_lockfile = true
+    encrypt      = true
   }
 }
 
