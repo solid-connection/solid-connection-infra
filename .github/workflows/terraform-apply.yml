@@ -1,0 +1,203 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.10.5"
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      bootstrap: ${{ steps.filter.outputs.bootstrap }}
+      global: ${{ steps.filter.outputs.global }}
+      prod: ${{ steps.filter.outputs.prod }}
+      stage: ${{ steps.filter.outputs.stage }}
+      monitoring: ${{ steps.filter.outputs.monitoring }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bootstrap:
+              - 'bootstrap/**'
+            global:
+              - 'environment/global/**'
+              - 'modules/shared_resources/**'
+            prod:
+              - 'environment/prod/**'
+              - 'modules/app_stack/**'
+              - 'modules/common/**'
+            stage:
+              - 'environment/stage/**'
+              - 'modules/app_stack/**'
+              - 'modules/common/**'
+            monitoring:
+              - 'environment/monitoring/**'
+              - 'modules/monitoring_stack/**'
+              - 'modules/common/**'
+
+  apply-bootstrap:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.bootstrap == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: bootstrap
+        run: terraform init
+      - name: Terraform Apply
+        working-directory: bootstrap
+        run: terraform apply -auto-approve
+
+  apply-global:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.global == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/global
+        run: terraform init
+      - name: Terraform Apply
+        working-directory: environment/global
+        run: |
+          terraform apply -auto-approve \
+            -var-file="../../config/secrets/shared_resources.tfvars"
+
+  apply-prod:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.prod == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Session Manager Plugin
+        run: |
+          curl -sL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" -o session-manager-plugin.deb
+          sudo dpkg -i session-manager-plugin.deb
+      - name: Start SSM Tunnel to RDS
+        run: |
+          EC2_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=solid-connection-server-prod" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+
+          RDS_HOST=$(aws rds describe-db-instances \
+            --query 'DBInstances[?contains(DBInstanceIdentifier, `prod`)].Endpoint.Address | [0]' \
+            --output text)
+
+          echo "Tunneling via $EC2_ID -> $RDS_HOST:3306"
+
+          aws ssm start-session \
+            --target "$EC2_ID" \
+            --document-name AWS-StartPortForwardingSessionToRemoteHost \
+            --parameters "{\"host\":[\"$RDS_HOST\"],\"portNumber\":[\"3306\"],\"localPortNumber\":[\"3306\"]}" &
+          echo "SSM_PID=$!" >> $GITHUB_ENV
+
+          timeout 30 bash -c 'until nc -z 127.0.0.1 3306 2>/dev/null; do sleep 1; done'
+          echo "SSM tunnel ready"
+      - name: Terraform Init
+        working-directory: environment/prod
+        run: terraform init
+      - name: Terraform Apply
+        working-directory: environment/prod
+        run: |
+          terraform apply -auto-approve \
+            -var-file="../../config/secrets/prod.tfvars" \
+            -var-file="../../config/secrets/app_stack.tfvars"
+      - name: Stop SSM Tunnel
+        if: always()
+        run: kill $SSM_PID 2>/dev/null || true
+
+  apply-stage:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.stage == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/stage
+        run: terraform init
+      - name: Terraform Apply
+        working-directory: environment/stage
+        run: |
+          terraform apply -auto-approve \
+            -var-file="../../config/secrets/stage.tfvars" \
+            -var-file="../../config/secrets/app_stack.tfvars"
+
+  apply-monitoring:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.monitoring == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/monitoring
+        run: terraform init
+      - name: Terraform Apply
+        working-directory: environment/monitoring
+        run: |
+          terraform apply -auto-approve \
+            -var-file="../../config/secrets/monitoring.tfvars"

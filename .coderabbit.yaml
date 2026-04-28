@@ -1,0 +1,18 @@
+language: ko-KR
+
+reviews:
+  auto_review:
+    enabled: false
+
+  path_instructions:
+    - path: "**/*.tf"
+      instructions: |
+        이 PR의 Terraform 코드 변경을 리뷰합니다.
+        PR 댓글에 올라온 각 환경의 "Terraform Plan" 결과를 반드시 확인하고, 코드 변경과 plan 결과가 일치하는지 검토하세요.
+
+        다음 항목을 중점적으로 검토하세요:
+        - plan에 예상치 못한 resource destroy 또는 replace가 포함된 경우
+        - 보안 그룹(Security Group) 인바운드/아웃바운드 규칙 변경
+        - IAM 권한이 과도하게 부여된 경우 (최소 권한 원칙)
+        - 민감한 값(비밀번호, 키 등)이 코드에 하드코딩된 경우
+        - `lifecycle.ignore_changes` 설정이 의도에 맞게 사용되었는지
