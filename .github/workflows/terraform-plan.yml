@@ -85,8 +85,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- terraform-plan:bootstrap -->';
-            const output = fs.readFileSync('bootstrap/plan_output.txt', 'utf8');
-            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const planFile = 'bootstrap/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `${marker}\n## Terraform Plan: \`bootstrap\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
@@ -147,8 +148,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- terraform-plan:global -->';
-            const output = fs.readFileSync('environment/global/plan_output.txt', 'utf8');
-            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const planFile = 'environment/global/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `${marker}\n## Terraform Plan: \`global\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
@@ -276,8 +278,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- terraform-plan:prod -->';
-            const output = fs.readFileSync('environment/prod/plan_output.txt', 'utf8');
-            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const planFile = 'environment/prod/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `${marker}\n## Terraform Plan: \`prod\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
@@ -339,8 +342,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- terraform-plan:stage -->';
-            const output = fs.readFileSync('environment/stage/plan_output.txt', 'utf8');
-            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const planFile = 'environment/stage/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `${marker}\n## Terraform Plan: \`stage\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
@@ -402,8 +406,9 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- terraform-plan:monitoring -->';
-            const output = fs.readFileSync('environment/monitoring/plan_output.txt', 'utf8');
-            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const planFile = 'environment/monitoring/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const body = `${marker}\n## Terraform Plan: \`monitoring\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
@@ -424,15 +429,41 @@ jobs:
 
   trigger-coderabbit:
     needs: [plan-bootstrap, plan-global, plan-prod, plan-stage, plan-monitoring]
-    if: always()
+    if: |
+      always() &&
+      (
+        needs.plan-bootstrap.result == 'success' || needs.plan-bootstrap.result == 'failure' ||
+        needs.plan-global.result == 'success' || needs.plan-global.result == 'failure' ||
+        needs.plan-prod.result == 'success' || needs.plan-prod.result == 'failure' ||
+        needs.plan-stage.result == 'success' || needs.plan-stage.result == 'failure' ||
+        needs.plan-monitoring.result == 'success' || needs.plan-monitoring.result == 'failure'
+      )
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v7
         with:
           script: |
-            github.rest.issues.createComment({
+            const marker = '<!-- coderabbit-review-trigger -->';
+            const body = `${marker}\n@coderabbitai review`;
+
+            const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: '@coderabbitai review'
             });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }
