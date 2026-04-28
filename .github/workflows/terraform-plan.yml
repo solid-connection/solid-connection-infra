@@ -11,6 +11,7 @@ permissions:
 
 env:
   TF_VERSION: "1.10.5"
+  SSM_TUNNEL_TIMEOUT: "60"
 
 jobs:
   detect-changes:
@@ -113,6 +114,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -174,6 +176,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -224,7 +227,7 @@ jobs:
           SSM_PID=$!
           echo "SSM_PID=$SSM_PID" >> $GITHUB_ENV
 
-          for i in $(seq 1 30); do
+          for i in $(seq 1 $SSM_TUNNEL_TIMEOUT); do
             if ! kill -0 $SSM_PID 2>/dev/null; then
               echo "::error::SSM 세션이 터널 준비 전에 종료되었습니다"
               exit 1
@@ -237,7 +240,7 @@ jobs:
           done
 
           if ! nc -z 127.0.0.1 3306 2>/dev/null; then
-            echo "::error::30초 내에 터널이 준비되지 않았습니다"
+            echo "::error::${SSM_TUNNEL_TIMEOUT}초 내에 터널이 준비되지 않았습니다"
             kill $SSM_PID 2>/dev/null || true
             exit 1
           fi
@@ -302,6 +305,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -364,6 +368,7 @@ jobs:
         with:
           submodules: recursive
           token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
