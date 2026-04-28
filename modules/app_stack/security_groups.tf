@@ -51,6 +51,7 @@ resource "aws_security_group" "api_sg" {
 
 # 2. RDS용 보안 그룹 (API Server만 믿음)
 resource "aws_security_group" "db_sg" {
+  count       = var.enable_rds ? 1 : 0
   name        = "sc-${var.env_name}-db-sg"
   description = "Security Group for RDS"
   vpc_id      = var.vpc_id
