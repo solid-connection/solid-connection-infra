@@ -187,8 +187,9 @@ jobs:
           curl -sL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
             -o /tmp/session-manager-plugin.deb
           sudo dpkg -i /tmp/session-manager-plugin.deb
-          sudo ln -sf /usr/local/sessionmanagerplugin/bin/session-manager-plugin /usr/bin/session-manager-plugin
-          session-manager-plugin --version
+          # 이후 모든 스텝의 PATH 맨 앞에 신규 설치 경로 추가
+          echo "/usr/local/sessionmanagerplugin/bin" >> $GITHUB_PATH
+          /usr/local/sessionmanagerplugin/bin/session-manager-plugin --version
       - name: Start SSM Tunnel to RDS
         run: |
           EC2_ID=$(aws ec2 describe-instances \
