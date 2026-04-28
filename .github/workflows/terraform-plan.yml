@@ -294,6 +294,7 @@ jobs:
         run: |
           terraform plan -no-color \
             -var-file="../../config/secrets/monitoring.tfvars" \
+            -var-file="../../config/secrets/monitoring_stack.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Post Plan Comment

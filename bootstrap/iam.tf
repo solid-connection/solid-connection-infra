@@ -14,34 +14,11 @@ resource "aws_iam_role_policy_attachment" "ec2_ssm" {
 }
 
 # =============================================
-# 개발자용 IAM Policy
+# 개발자용 IAM Policy (수동 관리, Terraform은 참조만)
 # =============================================
 
-# 로컬 terraform plan용: tfstate 읽기 + tflock 쓰기
-resource "aws_iam_policy" "developer_tfstate" {
-  name        = "TerraformStateAccessPolicy"
-  description = "For local terraform plan: read tfstate + write/delete tflock"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect   = "Allow"
-        Action   = ["s3:ListBucket"]
-        Resource = aws_s3_bucket.tfstate.arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "${aws_s3_bucket.tfstate.arn}/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["s3:PutObject", "s3:DeleteObject"]
-        Resource = "${aws_s3_bucket.tfstate.arn}/*.tfstate.tflock"
-      }
-    ]
-  })
+data "aws_iam_policy" "developer_tfstate" {
+  name = "TerraformStateAccessPolicy"
 }
 
 # =============================================
@@ -76,81 +53,21 @@ resource "aws_iam_role" "github_actions" {
   })
 }
 
-# GitHub Actions: tfstate 버킷 전체 접근
-resource "aws_iam_policy" "github_actions_tfstate" {
-  name        = "GitHubActionsTfstatePolicy"
-  description = "For GitHub Actions terraform apply: full access to tfstate bucket"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Action = [
-        "s3:ListBucket",
-        "s3:GetObject",
-        "s3:PutObject",
-        "s3:DeleteObject"
-      ]
-      Resource = [
-        aws_s3_bucket.tfstate.arn,
-        "${aws_s3_bucket.tfstate.arn}/*"
-      ]
-    }]
-  })
+# GitHub Actions 정책 (수동 관리, Terraform은 참조만)
+data "aws_iam_policy" "github_actions_tfstate" {
+  name = "GitHubActionsTfstatePolicy"
 }
 
-# GitHub Actions: AWS 인프라 관리 (terraform apply)
-resource "aws_iam_policy" "github_actions_infra" {
-  name        = "GitHubActionsTerraformInfraPolicy"
-  description = "For GitHub Actions terraform apply: AWS infrastructure management"
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "ec2:*",
-          "rds:*",
-          "s3:*",
-          "cloudfront:*",
-          "lambda:*",
-          "acm:*",
-          "ssm:StartSession",
-          "ssm:TerminateSession",
-          "ssm:DescribeSessions",
-          "ssm:GetConnectionStatus",
-          "ssm:DescribeInstanceInformation",
-          "kms:DescribeKey",
-          "kms:GenerateDataKey",
-          "kms:Decrypt",
-          "kms:CreateGrant",
-          "iam:PassRole",
-          "iam:GetRole",
-          "iam:CreateRole",
-          "iam:DeleteRole",
-          "iam:AttachRolePolicy",
-          "iam:DetachRolePolicy",
-          "iam:ListRolePolicies",
-          "iam:ListAttachedRolePolicies",
-          "logs:CreateLogGroup",
-          "logs:DeleteLogGroup",
-          "logs:DescribeLogGroups",
-          "logs:ListTagsLogGroup",
-          "logs:PutRetentionPolicy"
-        ]
-        Resource = "*"
-      }
-    ]
-  })
+data "aws_iam_policy" "github_actions_infra" {
+  name = "GitHubActionsTerraformInfraPolicy"
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_tfstate" {
   role       = aws_iam_role.github_actions.name
-  policy_arn = aws_iam_policy.github_actions_tfstate.arn
+  policy_arn = data.aws_iam_policy.github_actions_tfstate.arn
 }
 
 resource "aws_iam_role_policy_attachment" "github_actions_infra" {
   role       = aws_iam_role.github_actions.name
-  policy_arn = aws_iam_policy.github_actions_infra.arn
+  policy_arn = data.aws_iam_policy.github_actions_infra.arn
 }

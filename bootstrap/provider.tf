@@ -22,6 +22,7 @@ provider "aws" {
 
   default_tags {
     tags = {
+      Env = "bootstrap"
       Project = "solid-connection"
       ManagedBy = "terraform"
     }

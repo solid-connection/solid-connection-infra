@@ -200,4 +200,5 @@ jobs:
         working-directory: environment/monitoring
         run: |
           terraform apply -auto-approve \
-            -var-file="../../config/secrets/monitoring.tfvars"
+            -var-file="../../config/secrets/monitoring.tfvars" \
+            -var-file="../../config/secrets/monitoring_stack.tfvars"
