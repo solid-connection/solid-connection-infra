@@ -71,19 +71,35 @@ jobs:
         run: |
           terraform plan -no-color 2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-bootstrap
+          path: bootstrap/plan_output.txt
       - name: Post Plan Comment
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const marker = '<!-- terraform-plan:bootstrap -->';
             const output = fs.readFileSync('bootstrap/plan_output.txt', 'utf8');
-            const truncated = output.length > 60000 ? output.substring(0, 60000) + '\n...(truncated)' : output;
-            github.rest.issues.createComment({
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`bootstrap\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan: \`bootstrap\`\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n</details>`
             });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
       - name: Plan Status Check
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
@@ -116,19 +132,35 @@ jobs:
             -var-file="../../config/secrets/shared_resources.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-global
+          path: environment/global/plan_output.txt
       - name: Post Plan Comment
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const marker = '<!-- terraform-plan:global -->';
             const output = fs.readFileSync('environment/global/plan_output.txt', 'utf8');
-            const truncated = output.length > 60000 ? output.substring(0, 60000) + '\n...(truncated)' : output;
-            github.rest.issues.createComment({
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`global\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan: \`global\`\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n</details>`
             });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
       - name: Plan Status Check
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
@@ -165,16 +197,45 @@ jobs:
             --query 'DBInstances[?contains(DBInstanceIdentifier, `prod`)].Endpoint.Address | [0]' \
             --output text)
 
+          if [ -z "$EC2_ID" ] || [ "$EC2_ID" = "None" ]; then
+            echo "::error::prod EC2 인스턴스를 찾을 수 없습니다"
+            exit 1
+          fi
+          if [ -z "$RDS_HOST" ] || [ "$RDS_HOST" = "None" ]; then
+            echo "::error::prod RDS 엔드포인트를 찾을 수 없습니다"
+            exit 1
+          fi
+
           echo "Tunneling via $EC2_ID -> $RDS_HOST:3306"
 
           aws ssm start-session \
             --target "$EC2_ID" \
             --document-name AWS-StartPortForwardingSessionToRemoteHost \
             --parameters "{\"host\":[\"$RDS_HOST\"],\"portNumber\":[\"3306\"],\"localPortNumber\":[\"3306\"]}" &
-          echo "SSM_PID=$!" >> $GITHUB_ENV
+          SSM_PID=$!
+          echo "SSM_PID=$SSM_PID" >> $GITHUB_ENV
 
-          timeout 30 bash -c 'until nc -z 127.0.0.1 3306 2>/dev/null; do sleep 1; done'
-          echo "SSM tunnel ready"
+          for i in $(seq 1 30); do
+            if ! kill -0 $SSM_PID 2>/dev/null; then
+              echo "::error::SSM 세션이 터널 준비 전에 종료되었습니다"
+              exit 1
+            fi
+            if nc -z 127.0.0.1 3306 2>/dev/null; then
+              echo "SSM tunnel ready (${i}s)"
+              break
+            fi
+            sleep 1
+          done
+
+          if ! nc -z 127.0.0.1 3306 2>/dev/null; then
+            echo "::error::30초 내에 터널이 준비되지 않았습니다"
+            kill $SSM_PID 2>/dev/null || true
+            exit 1
+          fi
+          if ! kill -0 $SSM_PID 2>/dev/null; then
+            echo "::error::포트는 열렸으나 SSM 세션이 이미 종료되었습니다"
+            exit 1
+          fi
       - name: Terraform Init
         working-directory: environment/prod
         run: terraform init
@@ -190,19 +251,35 @@ jobs:
       - name: Stop SSM Tunnel
         if: always()
         run: kill $SSM_PID 2>/dev/null || true
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-prod
+          path: environment/prod/plan_output.txt
       - name: Post Plan Comment
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const marker = '<!-- terraform-plan:prod -->';
             const output = fs.readFileSync('environment/prod/plan_output.txt', 'utf8');
-            const truncated = output.length > 60000 ? output.substring(0, 60000) + '\n...(truncated)' : output;
-            github.rest.issues.createComment({
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`prod\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan: \`prod\`\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n</details>`
             });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
       - name: Plan Status Check
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
@@ -236,37 +313,38 @@ jobs:
             -var-file="../../config/secrets/app_stack.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-stage
+          path: environment/stage/plan_output.txt
       - name: Post Plan Comment
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const marker = '<!-- terraform-plan:stage -->';
             const output = fs.readFileSync('environment/stage/plan_output.txt', 'utf8');
-            const truncated = output.length > 60000 ? output.substring(0, 60000) + '\n...(truncated)' : output;
-            github.rest.issues.createComment({
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`stage\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan: \`stage\`\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n</details>`
             });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
       - name: Plan Status Check
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
-
-  trigger-coderabbit:
-    needs: [plan-bootstrap, plan-global, plan-prod, plan-stage, plan-monitoring]
-    if: always()
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/github-script@v7
-        with:
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: '@coderabbitai review'
-            });
 
   plan-monitoring:
     needs: detect-changes
@@ -297,19 +375,50 @@ jobs:
             -var-file="../../config/secrets/monitoring_stack.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-monitoring
+          path: environment/monitoring/plan_output.txt
       - name: Post Plan Comment
+        if: always()
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('fs');
+            const marker = '<!-- terraform-plan:monitoring -->';
             const output = fs.readFileSync('environment/monitoring/plan_output.txt', 'utf8');
-            const truncated = output.length > 60000 ? output.substring(0, 60000) + '\n...(truncated)' : output;
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || '(결과 파싱 불가)';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`monitoring\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  trigger-coderabbit:
+    needs: [plan-bootstrap, plan-global, plan-prod, plan-stage, plan-monitoring]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `## Terraform Plan: \`monitoring\`\n<details><summary>Show Plan</summary>\n\n\`\`\`\n${truncated}\n\`\`\`\n</details>`
+              body: '@coderabbitai review'
             });
-      - name: Plan Status Check
-        if: steps.plan.outputs.exitcode == '1'
-        run: exit 1

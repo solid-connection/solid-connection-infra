@@ -69,8 +69,11 @@ jobs:
         run: terraform apply -auto-approve
 
   apply-global:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.global == 'true'
+    needs: [detect-changes, apply-bootstrap]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.global == 'true' &&
+      (needs.apply-bootstrap.result == 'success' || needs.apply-bootstrap.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -95,8 +98,11 @@ jobs:
             -var-file="../../config/secrets/shared_resources.tfvars"
 
   apply-prod:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.prod == 'true'
+    needs: [detect-changes, apply-bootstrap]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.prod == 'true' &&
+      (needs.apply-bootstrap.result == 'success' || needs.apply-bootstrap.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -126,16 +132,45 @@ jobs:
             --query 'DBInstances[?contains(DBInstanceIdentifier, `prod`)].Endpoint.Address | [0]' \
             --output text)
 
+          if [ -z "$EC2_ID" ] || [ "$EC2_ID" = "None" ]; then
+            echo "::error::prod EC2 인스턴스를 찾을 수 없습니다"
+            exit 1
+          fi
+          if [ -z "$RDS_HOST" ] || [ "$RDS_HOST" = "None" ]; then
+            echo "::error::prod RDS 엔드포인트를 찾을 수 없습니다"
+            exit 1
+          fi
+
           echo "Tunneling via $EC2_ID -> $RDS_HOST:3306"
 
           aws ssm start-session \
             --target "$EC2_ID" \
             --document-name AWS-StartPortForwardingSessionToRemoteHost \
             --parameters "{\"host\":[\"$RDS_HOST\"],\"portNumber\":[\"3306\"],\"localPortNumber\":[\"3306\"]}" &
-          echo "SSM_PID=$!" >> $GITHUB_ENV
+          SSM_PID=$!
+          echo "SSM_PID=$SSM_PID" >> $GITHUB_ENV
 
-          timeout 30 bash -c 'until nc -z 127.0.0.1 3306 2>/dev/null; do sleep 1; done'
-          echo "SSM tunnel ready"
+          for i in $(seq 1 30); do
+            if ! kill -0 $SSM_PID 2>/dev/null; then
+              echo "::error::SSM 세션이 터널 준비 전에 종료되었습니다"
+              exit 1
+            fi
+            if nc -z 127.0.0.1 3306 2>/dev/null; then
+              echo "SSM tunnel ready (${i}s)"
+              break
+            fi
+            sleep 1
+          done
+
+          if ! nc -z 127.0.0.1 3306 2>/dev/null; then
+            echo "::error::30초 내에 터널이 준비되지 않았습니다"
+            kill $SSM_PID 2>/dev/null || true
+            exit 1
+          fi
+          if ! kill -0 $SSM_PID 2>/dev/null; then
+            echo "::error::포트는 열렸으나 SSM 세션이 이미 종료되었습니다"
+            exit 1
+          fi
       - name: Terraform Init
         working-directory: environment/prod
         run: terraform init
@@ -150,8 +185,11 @@ jobs:
         run: kill $SSM_PID 2>/dev/null || true
 
   apply-stage:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.stage == 'true'
+    needs: [detect-changes, apply-bootstrap]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.stage == 'true' &&
+      (needs.apply-bootstrap.result == 'success' || needs.apply-bootstrap.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -177,8 +215,11 @@ jobs:
             -var-file="../../config/secrets/app_stack.tfvars"
 
   apply-monitoring:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.monitoring == 'true'
+    needs: [detect-changes, apply-bootstrap]
+    if: |
+      always() &&
+      needs.detect-changes.outputs.monitoring == 'true' &&
+      (needs.apply-bootstrap.result == 'success' || needs.apply-bootstrap.result == 'skipped')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
