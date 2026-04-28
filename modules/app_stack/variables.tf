@@ -12,6 +12,12 @@ variable "enable_rds" {
   default     = true
 }
 
+variable "ec2_iam_instance_profile" {
+  description = "EC2에 연결할 IAM Instance Profile 이름"
+  type        = string
+  default     = null
+}
+
 variable "db_instance_class" {
   description = "RDS 인스턴스 타입"
   default     = null

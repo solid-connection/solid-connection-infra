@@ -11,6 +11,9 @@ module "stage_stack" {
 
   ami_id = var.ami_id
 
+  # IAM Instance Profile (SSM + Parameter Store 접근)
+  ec2_iam_instance_profile = var.ec2_iam_instance_profile
+
   # 키페어 및 접속 허용
   key_name          = var.key_name
 

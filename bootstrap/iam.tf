@@ -1,6 +1,19 @@
 data "aws_caller_identity" "current" {}
 
 # =============================================
+# EC2 공유 IAM Role에 SSM 정책 부착
+# =============================================
+
+data "aws_iam_role" "ec2_shared" {
+  name = "SolidConnectionParameterStoreReadRole"
+}
+
+resource "aws_iam_role_policy_attachment" "ec2_ssm" {
+  role       = data.aws_iam_role.ec2_shared.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# =============================================
 # 개발자용 IAM Policy
 # =============================================
 
@@ -103,6 +116,11 @@ resource "aws_iam_policy" "github_actions_infra" {
           "cloudfront:*",
           "lambda:*",
           "acm:*",
+          "ssm:StartSession",
+          "ssm:TerminateSession",
+          "ssm:DescribeSessions",
+          "ssm:GetConnectionStatus",
+          "ssm:DescribeInstanceInformation",
           "kms:DescribeKey",
           "kms:GenerateDataKey",
           "kms:Decrypt",

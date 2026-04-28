@@ -1,3 +1,8 @@
+variable "ec2_iam_instance_profile" {
+  description = "EC2에 연결할 IAM Instance Profile 이름"
+  type        = string
+}
+
 variable "ami_id" {
   description = "AMI ID for the prod environment"
   type        = string
