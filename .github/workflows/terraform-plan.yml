@@ -57,7 +57,7 @@ jobs:
           token: ${{ secrets.GH_PAT }}
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -118,7 +118,7 @@ jobs:
           persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -181,7 +181,7 @@ jobs:
           persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -311,7 +311,7 @@ jobs:
           persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
       - uses: hashicorp/setup-terraform@v3
         with:
@@ -375,7 +375,7 @@ jobs:
           persist-credentials: false
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
           aws-region: ap-northeast-2
       - uses: hashicorp/setup-terraform@v3
         with:

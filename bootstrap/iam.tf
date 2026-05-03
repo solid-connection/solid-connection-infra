@@ -35,14 +35,14 @@ resource "aws_iam_openid_connect_provider" "github" {
   }
 }
 
+# Apply Role: main 브랜치 push 전용 (terraform apply)
 resource "aws_iam_role" "github_actions" {
   name        = "GitHubActionsTerraformRole"
-  description = "IAM Role for GitHub Actions terraform plan/apply via OIDC"
+  description = "IAM Role for GitHub Actions terraform apply via OIDC (main only)"
   tags = {
     Project = "solid-connection"
     Env     = "bootstrap"
   }
-
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -55,10 +55,34 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = [
-            "repo:solid-connection/solid-connection-infra:ref:refs/heads/main",
-            "repo:solid-connection/solid-connection-infra:pull_request"
-          ]
+          "token.actions.githubusercontent.com:sub" = "repo:solid-connection/solid-connection-infra:ref:refs/heads/main"
+        }
+      }
+    }]
+  })
+}
+
+# Plan Role: PR 전용 (terraform plan, 읽기 전용)
+resource "aws_iam_role" "github_actions_plan" {
+  name        = "GitHubActionsTerraformPlanRole"
+  description = "IAM Role for GitHub Actions terraform plan via OIDC (pull_request only)"
+  tags = {
+    Project = "solid-connection"
+    Env     = "bootstrap"
+  }
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
+      Action    = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:solid-connection/solid-connection-infra:pull_request"
         }
       }
     }]
@@ -74,6 +98,11 @@ data "aws_iam_policy" "github_actions_infra" {
   name = "GitHubActionsTerraformInfraPolicy"
 }
 
+data "aws_iam_policy" "github_actions_infra_read" {
+  name = "GithubActionsTerraformInfraReadPolicy"
+}
+
+# Apply Role 정책 연결
 resource "aws_iam_role_policy_attachment" "github_actions_tfstate" {
   role       = aws_iam_role.github_actions.name
   policy_arn = data.aws_iam_policy.github_actions_tfstate.arn
@@ -82,4 +111,15 @@ resource "aws_iam_role_policy_attachment" "github_actions_tfstate" {
 resource "aws_iam_role_policy_attachment" "github_actions_infra" {
   role       = aws_iam_role.github_actions.name
   policy_arn = data.aws_iam_policy.github_actions_infra.arn
+}
+
+# Plan Role 정책 연결 (tfstate 읽기 전용 + 인프라 읽기 전용)
+resource "aws_iam_role_policy_attachment" "github_actions_plan_tfstate" {
+  role       = aws_iam_role.github_actions_plan.name
+  policy_arn = data.aws_iam_policy.developer_tfstate.arn
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions_plan_infra_read" {
+  role       = aws_iam_role.github_actions_plan.name
+  policy_arn = data.aws_iam_policy.github_actions_infra_read.arn
 }

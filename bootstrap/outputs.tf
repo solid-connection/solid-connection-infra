@@ -12,6 +12,11 @@ output "developer_tfstate_policy_arn" {
 }
 
 output "github_actions_role_arn" {
-  description = "GitHub Actions workflow에서 사용할 IAM Role ARN"
+  description = "GitHub Actions apply workflow에서 사용할 IAM Role ARN (main 전용)"
   value       = aws_iam_role.github_actions.arn
+}
+
+output "github_actions_plan_role_arn" {
+  description = "GitHub Actions plan workflow에서 사용할 IAM Role ARN (PR 전용)"
+  value       = aws_iam_role.github_actions_plan.arn
 }
