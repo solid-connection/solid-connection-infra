@@ -44,7 +44,7 @@ resource "aws_lambda_permission" "allow_s3_resizing" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.resizing_img_func.function_name
   principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.default.arn
+  source_arn    = aws_s3_bucket.upload.arn
 }
 
 resource "aws_lambda_permission" "allow_s3_thumbnail" {
@@ -52,12 +52,12 @@ resource "aws_lambda_permission" "allow_s3_thumbnail" {
   action        = "lambda:InvokeFunction"
   function_name = aws_lambda_function.thumbnail_generating_func.function_name
   principal     = "s3.amazonaws.com"
-  source_arn    = aws_s3_bucket.default.arn
+  source_arn    = aws_s3_bucket.upload.arn
 }
 
 # 4. S3 Trigger Setting
 resource "aws_s3_bucket_notification" "bucket_notification" {
-  bucket = aws_s3_bucket.default.id
+  bucket = aws_s3_bucket.upload.id
 
   lambda_function {
     lambda_function_arn = aws_lambda_function.resizing_img_func.arn

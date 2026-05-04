@@ -6,8 +6,21 @@ variable "instance_type" {
   description = "EC2 인스턴스 타입"
 }
 
+variable "enable_rds" {
+  description = "RDS 사용 여부"
+  type        = bool
+  default     = true
+}
+
+variable "ec2_iam_instance_profile" {
+  description = "EC2에 연결할 IAM Instance Profile 이름"
+  type        = string
+  default     = null
+}
+
 variable "db_instance_class" {
   description = "RDS 인스턴스 타입"
+  default     = null
 }
 
 variable "api_ingress_rules" {
@@ -29,18 +42,21 @@ variable "db_ingress_rules" {
     protocol    = string
     description = string
   }))
+  default = []
 }
 
 # [DB 관련 추가 변수]
 variable "db_username" {
   description = "DB 마스터 사용자명"
   type        = string
+  default     = ""
 }
 
 variable "db_password" {
   description = "DB 마스터 비밀번호"
   type        = string
   sensitive   = true
+  default     = ""
 }
 
 # 추가할 DB 유저 목록
@@ -57,21 +73,25 @@ variable "additional_db_users" {
 variable "db_engine_version" {
   description = "MySQL 엔진 버전"
   type        = string
+  default     = null
 }
 
 variable "db_parameter_group_name" {
   description = "MySQL 엔진 파라미터 그룹"
   type        = string
+  default     = null
 }
 
 variable "rds_identifier" {
   description = "RDS DB Identifier"
   type        = string
+  default     = null
 }
 
 variable "kms_key_arn" {
   description = "RDS 스토리지 암호화를 위한 KMS Key ARN"
   type        = string
+  default     = null
 }
 
 variable "vpc_id" {

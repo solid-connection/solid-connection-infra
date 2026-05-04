@@ -1,3 +1,8 @@
+variable "ec2_iam_instance_profile" {
+  description = "EC2에 연결할 IAM Instance Profile 이름"
+  type        = string
+}
+
 variable "ami_id" {
   description = "AMI ID for the stage environment"
   type        = string
@@ -5,11 +10,6 @@ variable "ami_id" {
 
 variable "server_instance_type" {
   description = "Server instance type for the stage environment"
-  type        = string
-}
-
-variable "db_instance_class" {
-  description = "DB instance class for the stage environment"
   type        = string
 }
 
@@ -24,58 +24,8 @@ variable "api_ingress_rules" {
   }))
 }
 
-variable "db_ingress_rules" {
-  description = "List of ingress rules for DB Server"
-  type = list(object({
-    from_port   = number
-    to_port     = number
-    protocol    = string
-    description = string
-  }))
-}
-
-variable "rds_identifier" {
-  description = "RDS identifier for the stage environment"
-  type        = string
-}
-
-variable "db_engine_version" {
-  description = "MySQL engine version for the stage environment"
-  type        = string
-}
-
-variable "db_parameter_group_name" {
-  description = "MySQL parameter group name for the stage environment"
-  type        = string
-}
-
-variable "db_root_username" {
-  description = "DB Username for stage"
-  type        = string
-}
-
-variable "db_root_password" {
-  description = "DB Password for stage"
-  type        = string
-  sensitive   = true
-}
-
-variable "additional_db_users" {
-  description = "추가 DB 유저 및 권한 목록"
-  type = map(object({
-    password   = string
-    database   = string
-    privileges = list(string)
-  }))
-}
-
 variable "key_name" {
   description = "Key pair name"
-  type        = string
-}
-
-variable "kms_key_arn" {
-  description = "Existing KMS Key ARN for stage DB Encryption"
   type        = string
 }
 

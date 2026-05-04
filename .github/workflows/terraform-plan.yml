@@ -1,0 +1,479 @@
+name: Terraform Plan
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+env:
+  TF_VERSION: "1.10.5"
+  SSM_TUNNEL_TIMEOUT: "60"
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      bootstrap: ${{ steps.filter.outputs.bootstrap }}
+      global: ${{ steps.filter.outputs.global }}
+      prod: ${{ steps.filter.outputs.prod }}
+      stage: ${{ steps.filter.outputs.stage }}
+      monitoring: ${{ steps.filter.outputs.monitoring }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bootstrap:
+              - 'bootstrap/**'
+            global:
+              - 'environment/global/**'
+              - 'modules/shared_resources/**'
+              - 'config/secrets/shared_resources.tfvars'
+            prod:
+              - 'environment/prod/**'
+              - 'modules/app_stack/**'
+              - 'modules/common/**'
+              - 'config/secrets/prod.tfvars'
+              - 'config/secrets/app_stack.tfvars'
+            stage:
+              - 'environment/stage/**'
+              - 'modules/app_stack/**'
+              - 'modules/common/**'
+              - 'config/secrets/stage.tfvars'
+              - 'config/secrets/app_stack.tfvars'
+            monitoring:
+              - 'environment/monitoring/**'
+              - 'modules/monitoring_stack/**'
+              - 'modules/common/**'
+              - 'config/secrets/monitoring.tfvars'
+              - 'config/secrets/monitoring_stack.tfvars'
+
+  plan-bootstrap:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.bootstrap == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: bootstrap
+        run: terraform init
+      - name: Terraform Plan
+        id: plan
+        working-directory: bootstrap
+        run: |
+          terraform plan -no-color 2>&1 | tee plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-bootstrap
+          path: bootstrap/plan_output.txt
+      - name: Post Plan Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan:bootstrap -->';
+            const planFile = 'bootstrap/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`bootstrap\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  plan-global:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.global == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/global
+        run: terraform init
+      - name: Terraform Plan
+        id: plan
+        working-directory: environment/global
+        run: |
+          terraform plan -no-color \
+            -var-file="../../config/secrets/shared_resources.tfvars" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-global
+          path: environment/global/plan_output.txt
+      - name: Post Plan Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan:global -->';
+            const planFile = 'environment/global/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`global\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  plan-prod:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.prod == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Install Session Manager Plugin
+        run: |
+          curl -sL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+            -o /tmp/session-manager-plugin.deb
+          sudo dpkg -i /tmp/session-manager-plugin.deb
+          # 이후 모든 스텝의 PATH 맨 앞에 신규 설치 경로 추가
+          echo "/usr/local/sessionmanagerplugin/bin" >> $GITHUB_PATH
+          /usr/local/sessionmanagerplugin/bin/session-manager-plugin --version
+      - name: Start SSM Tunnel to RDS
+        run: |
+          echo "=== session-manager-plugin 진단 ==="
+          which session-manager-plugin || echo "NOT IN PATH"
+          session-manager-plugin --version || echo "VERSION CHECK FAILED"
+          echo "===================================="
+
+          EC2_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=solid-connection-server-prod" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' \
+            --output text)
+
+          RDS_HOST=$(aws rds describe-db-instances \
+            --query 'DBInstances[?contains(DBInstanceIdentifier, `prod`)].Endpoint.Address | [0]' \
+            --output text)
+
+          if [ -z "$EC2_ID" ] || [ "$EC2_ID" = "None" ]; then
+            echo "::error::prod EC2 인스턴스를 찾을 수 없습니다"
+            exit 1
+          fi
+          if [ -z "$RDS_HOST" ] || [ "$RDS_HOST" = "None" ]; then
+            echo "::error::prod RDS 엔드포인트를 찾을 수 없습니다"
+            exit 1
+          fi
+
+          echo "Tunneling via $EC2_ID -> $RDS_HOST:3306"
+
+          aws ssm start-session \
+            --target "$EC2_ID" \
+            --document-name AWS-StartPortForwardingSessionToRemoteHost \
+            --parameters "{\"host\":[\"$RDS_HOST\"],\"portNumber\":[\"3306\"],\"localPortNumber\":[\"3306\"]}" &
+          SSM_PID=$!
+          echo "SSM_PID=$SSM_PID" >> $GITHUB_ENV
+
+          for i in $(seq 1 $SSM_TUNNEL_TIMEOUT); do
+            if ! kill -0 $SSM_PID 2>/dev/null; then
+              echo "::error::SSM 세션이 터널 준비 전에 종료되었습니다"
+              exit 1
+            fi
+            if nc -z 127.0.0.1 3306 2>/dev/null; then
+              echo "SSM tunnel ready (${i}s)"
+              break
+            fi
+            sleep 1
+          done
+
+          if ! nc -z 127.0.0.1 3306 2>/dev/null; then
+            echo "::error::${SSM_TUNNEL_TIMEOUT}초 내에 터널이 준비되지 않았습니다"
+            kill $SSM_PID 2>/dev/null || true
+            exit 1
+          fi
+          if ! kill -0 $SSM_PID 2>/dev/null; then
+            echo "::error::포트는 열렸으나 SSM 세션이 이미 종료되었습니다"
+            exit 1
+          fi
+      - name: Terraform Init
+        working-directory: environment/prod
+        run: terraform init
+      - name: Terraform Plan
+        id: plan
+        working-directory: environment/prod
+        run: |
+          terraform plan -no-color \
+            -var-file="../../config/secrets/prod.tfvars" \
+            -var-file="../../config/secrets/app_stack.tfvars" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Stop SSM Tunnel
+        if: always()
+        run: kill $SSM_PID 2>/dev/null || true
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-prod
+          path: environment/prod/plan_output.txt
+      - name: Post Plan Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan:prod -->';
+            const planFile = 'environment/prod/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`prod\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  plan-stage:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.stage == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/stage
+        run: terraform init
+      - name: Terraform Plan
+        id: plan
+        working-directory: environment/stage
+        run: |
+          terraform plan -no-color \
+            -var-file="../../config/secrets/stage.tfvars" \
+            -var-file="../../config/secrets/app_stack.tfvars" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-stage
+          path: environment/stage/plan_output.txt
+      - name: Post Plan Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan:stage -->';
+            const planFile = 'environment/stage/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`stage\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  plan-monitoring:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.monitoring == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/monitoring
+        run: terraform init
+      - name: Terraform Plan
+        id: plan
+        working-directory: environment/monitoring
+        run: |
+          terraform plan -no-color \
+            -var-file="../../config/secrets/monitoring.tfvars" \
+            -var-file="../../config/secrets/monitoring_stack.tfvars" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-monitoring
+          path: environment/monitoring/plan_output.txt
+      - name: Post Plan Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan:monitoring -->';
+            const planFile = 'environment/monitoring/plan_output.txt';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`monitoring\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  trigger-coderabbit:
+    needs: [plan-bootstrap, plan-global, plan-prod, plan-stage, plan-monitoring]
+    if: |
+      always() &&
+      (
+        needs.plan-bootstrap.result == 'success' || needs.plan-bootstrap.result == 'failure' ||
+        needs.plan-global.result == 'success' || needs.plan-global.result == 'failure' ||
+        needs.plan-prod.result == 'success' || needs.plan-prod.result == 'failure' ||
+        needs.plan-stage.result == 'success' || needs.plan-stage.result == 'failure' ||
+        needs.plan-monitoring.result == 'success' || needs.plan-monitoring.result == 'failure'
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- coderabbit-review-trigger -->';
+            const body = `${marker}\n@coderabbitai review`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                comment_id: existing.id,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body,
+              });
+            }

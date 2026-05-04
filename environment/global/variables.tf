@@ -1,9 +1,4 @@
 # [S3 버킷 관련 변수]
-variable "s3_default_bucket_name" {
-  description = "Name of the default S3 bucket"
-  type        = string
-}
-
 variable "s3_upload_bucket_name" {
   description = "Name of the upload S3 bucket"
   type        = string
@@ -58,11 +53,6 @@ variable "resizing_img_func_layers" {
 variable "thumbnail_generating_func_layers" {
   description = "Layers For Image Resizing func"
   type = list(string)
-}
-
-variable "default_cdn_web_acl_id" {
-  description = "WAF Web ACL Id for Default Cloudfront CDN"
-  type = string
 }
 
 variable "upload_cdn_web_acl_id" {

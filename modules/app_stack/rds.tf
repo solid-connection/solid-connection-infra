@@ -1,5 +1,7 @@
 # 5. RDS
 resource "aws_db_instance" "default" {
+  count = var.enable_rds ? 1 : 0
+
   identifier            = var.rds_identifier
   allocated_storage     = 20
   engine                = "mysql"
@@ -10,7 +12,7 @@ resource "aws_db_instance" "default" {
   parameter_group_name  = var.db_parameter_group_name
   copy_tags_to_snapshot = true
   skip_final_snapshot   = true
-  vpc_security_group_ids = [aws_security_group.db_sg.id]
+  vpc_security_group_ids = [aws_security_group.db_sg[count.index].id]
 
   storage_encrypted = true
   kms_key_id        = var.kms_key_arn
@@ -22,7 +24,7 @@ resource "aws_db_instance" "default" {
 
 # 6. MySQL 추가 유저 생성
 resource "mysql_user" "users" {
-  for_each = var.additional_db_users
+  for_each = var.enable_rds ? var.additional_db_users : {}
 
   user               = each.key
   host               = "%"
@@ -33,7 +35,7 @@ resource "mysql_user" "users" {
 
 # 7. MySQL 권한 부여
 resource "mysql_grant" "user_grants" {
-  for_each = var.additional_db_users
+  for_each = var.enable_rds ? var.additional_db_users : {}
 
   user       = each.key
   host       = "%"

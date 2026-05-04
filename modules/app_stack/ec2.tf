@@ -32,6 +32,7 @@ resource "aws_instance" "api_server" {
 
   key_name                    = var.key_name
   associate_public_ip_address = true
+  iam_instance_profile        = var.ec2_iam_instance_profile
 
   user_data_base64 = data.cloudinit_config.app_init.rendered
 

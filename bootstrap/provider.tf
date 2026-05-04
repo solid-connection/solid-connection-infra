@@ -6,15 +6,11 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 5.0"
     }
-    cloudinit = {
-      source  = "hashicorp/cloudinit"
-      version = "~> 2.3"
-    }
   }
 
   backend "s3" {
     bucket       = "solid-connection-tfstate"
-    key          = "env/monitoring/terraform.tfstate"
+    key          = "env/bootstrap/terraform.tfstate"
     region       = "ap-northeast-2"
     use_lockfile = true
     encrypt      = true
@@ -23,10 +19,12 @@ terraform {
 
 provider "aws" {
   region = "ap-northeast-2"
+
   default_tags {
     tags = {
+      Env = "bootstrap"
       Project = "solid-connection"
-      Env     = "monitoring"
+      ManagedBy = "terraform"
     }
   }
 }
