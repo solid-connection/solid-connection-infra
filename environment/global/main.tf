@@ -5,7 +5,6 @@ module "shared_resources" {
     aws     = aws
   }
 
-  s3_default_bucket_name            = var.s3_default_bucket_name
   s3_upload_bucket_name             = var.s3_upload_bucket_name
 
   resizing_img_func_name            = var.resizing_img_func_name
@@ -20,6 +19,5 @@ module "shared_resources" {
   thumbnail_generating_func_runtime = var.thumbnail_generating_func_runtime
   thumbnail_generating_func_layers  = var.thumbnail_generating_func_layers
 
-  default_cdn_web_acl_id            = var.default_cdn_web_acl_id
   upload_cdn_web_acl_id             = var.upload_cdn_web_acl_id
 }
