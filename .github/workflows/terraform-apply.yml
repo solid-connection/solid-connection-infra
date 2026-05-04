@@ -23,6 +23,9 @@ jobs:
       monitoring: ${{ steps.filter.outputs.monitoring }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -32,18 +35,25 @@ jobs:
             global:
               - 'environment/global/**'
               - 'modules/shared_resources/**'
+              - 'config/secrets/shared_resources.tfvars'
             prod:
               - 'environment/prod/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
+              - 'config/secrets/prod.tfvars'
+              - 'config/secrets/app_stack.tfvars'
             stage:
               - 'environment/stage/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
+              - 'config/secrets/stage.tfvars'
+              - 'config/secrets/app_stack.tfvars'
             monitoring:
               - 'environment/monitoring/**'
               - 'modules/monitoring_stack/**'
               - 'modules/common/**'
+              - 'config/secrets/monitoring.tfvars'
+              - 'config/secrets/monitoring_stack.tfvars'
 
   apply-bootstrap:
     needs: detect-changes
