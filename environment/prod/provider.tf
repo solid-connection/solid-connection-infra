@@ -34,6 +34,6 @@ provider "aws" {
 # MySQL Provider 설정 (SSH 터널링을 통해 로컬호스트로 접속)
 provider "mysql" {
   endpoint = "127.0.0.1:3306"
-  username = var.db_root_username
-  password = var.db_root_password
+  username = local.db_root_username
+  password = local.db_root_password
 }

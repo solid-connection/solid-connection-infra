@@ -35,25 +35,18 @@ jobs:
             global:
               - 'environment/global/**'
               - 'modules/shared_resources/**'
-              - 'config/secrets/shared_resources.tfvars'
             prod:
               - 'environment/prod/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/prod.tfvars'
-              - 'config/secrets/app_stack.tfvars'
             stage:
               - 'environment/stage/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/stage.tfvars'
-              - 'config/secrets/app_stack.tfvars'
             monitoring:
               - 'environment/monitoring/**'
               - 'modules/monitoring_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/monitoring.tfvars'
-              - 'config/secrets/monitoring_stack.tfvars'
 
   apply-bootstrap:
     needs: detect-changes
@@ -106,9 +99,7 @@ jobs:
         run: terraform init
       - name: Terraform Apply
         working-directory: environment/global
-        run: |
-          terraform apply -auto-approve \
-            -var-file="../../config/secrets/shared_resources.tfvars"
+        run: terraform apply -auto-approve
 
   apply-prod:
     needs: [detect-changes, apply-bootstrap]
@@ -198,10 +189,7 @@ jobs:
         run: terraform init
       - name: Terraform Apply
         working-directory: environment/prod
-        run: |
-          terraform apply -auto-approve \
-            -var-file="../../config/secrets/prod.tfvars" \
-            -var-file="../../config/secrets/app_stack.tfvars"
+        run: terraform apply -auto-approve
       - name: Stop SSM Tunnel
         if: always()
         run: kill $SSM_PID 2>/dev/null || true
@@ -232,10 +220,7 @@ jobs:
         run: terraform init
       - name: Terraform Apply
         working-directory: environment/stage
-        run: |
-          terraform apply -auto-approve \
-            -var-file="../../config/secrets/stage.tfvars" \
-            -var-file="../../config/secrets/app_stack.tfvars"
+        run: terraform apply -auto-approve
 
   apply-monitoring:
     needs: [detect-changes, apply-bootstrap]
@@ -263,7 +248,4 @@ jobs:
         run: terraform init
       - name: Terraform Apply
         working-directory: environment/monitoring
-        run: |
-          terraform apply -auto-approve \
-            -var-file="../../config/secrets/monitoring.tfvars" \
-            -var-file="../../config/secrets/monitoring_stack.tfvars"
+        run: terraform apply -auto-approve

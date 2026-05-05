@@ -7,23 +7,23 @@ module "monitoring_stack" {
   # 기존 app_stack 모듈을 재사용하거나, 모니터링 전용 모듈이 있다면 경로 수정
   source = "../../modules/monitoring_stack"
 
-  env_name          = "monitoring"
-  vpc_id            = data.aws_vpc.default.id
+  env_name = "monitoring"
+  vpc_id   = data.aws_vpc.default.id
 
-  ami_id            = var.ami_id
+  ami_id = local.ami_id
 
-  key_name          = var.key_name
+  key_name = local.key_name
 
-  instance_type     = var.monitoring_instance_type
+  instance_type = local.monitoring_instance_type
 
-  private_ip = var.private_ip
+  private_ip = local.private_ip
 
   # Nginx 및 도메인 설정
-  domain_name = var.domain_name
-  cert_email  = var.cert_email
-  nginx_conf_name = var.nginx_conf_name
+  domain_name     = local.domain_name
+  cert_email      = local.cert_email
+  nginx_conf_name = local.nginx_conf_name
 
 
   # Grafana(3000), Prometheus(9090), Loki(3100) 포트 개방
-  monitoring_ingress_rules = var.monitoring_ingress_rules
+  monitoring_ingress_rules = local.monitoring_ingress_rules
 }

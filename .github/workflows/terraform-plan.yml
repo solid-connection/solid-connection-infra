@@ -36,25 +36,18 @@ jobs:
             global:
               - 'environment/global/**'
               - 'modules/shared_resources/**'
-              - 'config/secrets/shared_resources.tfvars'
             prod:
               - 'environment/prod/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/prod.tfvars'
-              - 'config/secrets/app_stack.tfvars'
             stage:
               - 'environment/stage/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/stage.tfvars'
-              - 'config/secrets/app_stack.tfvars'
             monitoring:
               - 'environment/monitoring/**'
               - 'modules/monitoring_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/monitoring.tfvars'
-              - 'config/secrets/monitoring_stack.tfvars'
 
   plan-bootstrap:
     needs: detect-changes
@@ -141,9 +134,7 @@ jobs:
         id: plan
         working-directory: environment/global
         run: |
-          terraform plan -no-color \
-            -var-file="../../config/secrets/shared_resources.tfvars" \
-            2>&1 | tee plan_output.txt
+          terraform plan -no-color 2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Upload Plan Artifact
         if: always()
@@ -267,10 +258,7 @@ jobs:
         id: plan
         working-directory: environment/prod
         run: |
-          terraform plan -no-color \
-            -var-file="../../config/secrets/prod.tfvars" \
-            -var-file="../../config/secrets/app_stack.tfvars" \
-            2>&1 | tee plan_output.txt
+          terraform plan -no-color 2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Stop SSM Tunnel
         if: always()
@@ -334,10 +322,7 @@ jobs:
         id: plan
         working-directory: environment/stage
         run: |
-          terraform plan -no-color \
-            -var-file="../../config/secrets/stage.tfvars" \
-            -var-file="../../config/secrets/app_stack.tfvars" \
-            2>&1 | tee plan_output.txt
+          terraform plan -no-color 2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Upload Plan Artifact
         if: always()
@@ -398,10 +383,7 @@ jobs:
         id: plan
         working-directory: environment/monitoring
         run: |
-          terraform plan -no-color \
-            -var-file="../../config/secrets/monitoring.tfvars" \
-            -var-file="../../config/secrets/monitoring_stack.tfvars" \
-            2>&1 | tee plan_output.txt
+          terraform plan -no-color 2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Upload Plan Artifact
         if: always()
