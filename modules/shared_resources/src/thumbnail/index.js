@@ -14,10 +14,10 @@ export const handler = async (event) => {
 
         console.log(`Processing file: ${key} from bucket: ${bucket}`);
 
-        // chat/images/ 폴더의 이미지 파일만 처리
-        if (!key.startsWith('chat/images/')) {
-            console.log('Not a chat image, skipping');
-            return { statusCode: 200, body: 'Not a chat image' };
+        // chat/files/ 폴더의 이미지 파일만 처리
+        if (!key.startsWith('chat/files/')) {
+            console.log('Not a chat file, skipping');
+            return { statusCode: 200, body: 'Not a chat file' };
         }
 
         // 이미지 파일 확장자 확인
