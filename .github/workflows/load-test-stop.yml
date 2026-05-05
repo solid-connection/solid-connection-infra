@@ -1,0 +1,65 @@
+name: Load Test Stop
+
+on:
+  workflow_dispatch:
+    inputs:
+      restore_stage_dev:
+        description: "Restart stage app with dev profile"
+        required: true
+        default: true
+        type: boolean
+      destroy_rds:
+        description: "Destroy load test Terraform stack"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: load-test-environment
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.10.5"
+
+jobs:
+  stop:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Stop load test environment
+        run: |
+          args=()
+
+          if [ "${{ inputs.restore_stage_dev }}" = "true" ]; then
+            args+=(--restore-stage-dev)
+          fi
+
+          if [ "${{ inputs.destroy_rds }}" != "true" ]; then
+            args+=(--skip-terraform-destroy)
+          fi
+
+          bash scripts/load_test/stop.sh "${args[@]}"

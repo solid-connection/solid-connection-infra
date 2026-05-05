@@ -1,49 +1,61 @@
 # Load Test Automation
 
 This automation creates a temporary load test RDS instance, copies prod RDS data
-into it, writes load test datasource values to Parameter Store, and optionally
-stops/starts the stage application through SSM Run Command.
+into it, writes load test datasource values to Parameter Store, and switches the
+stage application through SSM Run Command.
 
-## Flow
+## GitHub Actions Flow
 
-1. `Start-LoadTest.ps1` runs `terraform apply` in `environment/load_test`.
-2. Terraform creates the load test RDS and writes:
+### Start
+
+1. Open **Actions > Load Test Start**.
+2. Click **Run workflow**.
+3. Keep `switch_stage_to_loadtest` enabled to restart stage with
+   `dev,loadtest` profiles.
+4. Keep `copy_prod_data` enabled to copy prod RDS data into the load test RDS.
+
+The workflow runs `scripts/load_test/start.sh`.
+
+### Stop
+
+1. Open **Actions > Load Test Stop**.
+2. Click **Run workflow**.
+3. Keep `restore_stage_dev` enabled to restart stage with the normal dev
+   compose configuration.
+4. Keep `destroy_rds` enabled to destroy the load test Terraform stack.
+
+The workflow runs `scripts/load_test/stop.sh`.
+
+## What Start Does
+
+1. Runs `terraform apply` in `environment/load_test`.
+2. Creates the load test RDS and writes:
    - `/solid-connection/loadtest/spring.datasource.url`
    - `/solid-connection/loadtest/spring.datasource.username`
    - `/solid-connection/loadtest/spring.datasource.password`
-3. The script stores DB migration credentials in temporary SSM parameters.
-4. The prod EC2 instance runs `mysqldump` against prod RDS and restores it into
-   the load test RDS.
-5. The optional stage stop command can pause the stage app before the load test.
-6. `Stop-LoadTest.ps1` can run an optional stage start command and then destroy
-   only the load test Terraform stack.
+3. Switches the stage app to `dev,loadtest` profiles through SSM Run Command.
+4. Stores DB migration credentials in temporary SSM parameters.
+5. Runs `mysqldump` on the prod EC2 instance through SSM Run Command and
+   restores the dump into the load test RDS.
+6. Deletes the temporary migration parameters.
 
-## Example
+## What Stop Does
 
-```bash
-scripts/load_test/start.sh \
-  --switch-stage-to-loadtest \
-  --stage-ssh-key ./stage-key.pem
-```
-
-```bash
-scripts/load_test/stop.sh \
-  --restore-stage-dev \
-  --stage-ssh-key ./stage-key.pem
-```
+1. Restores the stage app to the normal dev compose configuration through SSM
+   Run Command.
+2. Runs `terraform destroy` for the load test Terraform stack.
 
 ## Notes
 
+- GitHub Actions uses `AWS_ROLE_ARN` through OIDC.
+- Private submodule checkout uses `GH_PAT`.
+- No SSH private key is required for load test start/stop.
 - The prod and stage EC2 instances are looked up by their `Name` tags.
 - Prod DB username/password are read from Parameter Store. The default paths are
   `/solid-connection/prod/spring.datasource.username` and
   `/solid-connection/prod/spring.datasource.password`.
-- Load test DB username/password are also read from Parameter Store. The default
-  paths are `/solid-connection/loadtest/spring.datasource.username` and
+- Load test DB username/password are read from Parameter Store. The default paths
+  are `/solid-connection/loadtest/spring.datasource.username` and
   `/solid-connection/loadtest/spring.datasource.password`.
 - The load test RDS security group allows MySQL only from the security groups
   attached to the prod and stage API EC2 instances.
-- The prod EC2 instance must have SSM access and permission to read the temporary
-  migration parameters.
-- Keep the real `load_test.tfvars` in the secret submodule or another ignored
-  local location. Do not commit it.

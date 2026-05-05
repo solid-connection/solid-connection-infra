@@ -10,8 +10,6 @@ PROD_DB_PASSWORD_PARAMETER="/solid-connection/prod/spring.datasource.password"
 LOADTEST_DB_USERNAME_PARAMETER="/solid-connection/loadtest/spring.datasource.username"
 LOADTEST_DB_PASSWORD_PARAMETER="/solid-connection/loadtest/spring.datasource.password"
 SWITCH_STAGE_TO_LOADTEST="false"
-STAGE_SSH_USER="ubuntu"
-STAGE_SSH_KEY=""
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
 SKIP_TERRAFORM_APPLY="false"
@@ -30,9 +28,7 @@ Options:
   --loadtest-db-password-parameter  Default: /solid-connection/loadtest/spring.datasource.password
   --database-name VALUE         Default: solid_connection
   --migration-prefix VALUE      Default: /solid-connection/loadtest/migration
-  --switch-stage-to-loadtest    Restart stage app over SSH with dev,loadtest profiles
-  --stage-ssh-user VALUE        Default: ubuntu
-  --stage-ssh-key PATH          Required with --switch-stage-to-loadtest
+  --switch-stage-to-loadtest    Restart stage app through SSM with dev,loadtest profiles
   --stage-app-dir PATH          Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE    Default: docker-compose.dev.yml
   --skip-terraform-apply
@@ -52,8 +48,6 @@ while [[ $# -gt 0 ]]; do
     --database-name) DATABASE_NAME="$2"; shift 2 ;;
     --migration-prefix) MIGRATION_PARAMETER_PREFIX="$2"; shift 2 ;;
     --switch-stage-to-loadtest) SWITCH_STAGE_TO_LOADTEST="true"; shift ;;
-    --stage-ssh-user) STAGE_SSH_USER="$2"; shift 2 ;;
-    --stage-ssh-key) STAGE_SSH_KEY="$2"; shift 2 ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
     --skip-terraform-apply) SKIP_TERRAFORM_APPLY="true"; shift ;;
@@ -82,7 +76,6 @@ require_command() {
 require_command terraform
 require_command aws
 require_command jq
-require_command ssh
 
 tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
@@ -147,39 +140,24 @@ loadtest_endpoint="$(tf_output load_test_rds_endpoint)"
 loadtest_port="$(tf_output load_test_rds_port)"
 
 if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
-  require_value "--stage-ssh-key" "$STAGE_SSH_KEY"
+  stage_commands_json="$(jq -cn \
+    --arg app_dir "$STAGE_APP_DIR" \
+    --arg compose_file "$STAGE_COMPOSE_FILE" \
+    '{
+      commands: [
+        "set -euo pipefail",
+        "cd \($app_dir)",
+        "CURRENT_IMAGE=$(docker inspect -f '\''{{.Config.Image}}'\'' solid-connection-dev 2>/dev/null || true)",
+        "if [ -z \"$CURRENT_IMAGE\" ]; then echo \"solid-connection-dev container is not running; cannot infer image tag\" >&2; exit 1; fi",
+        "OWNER_LOWERCASE=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#^ghcr.io/([^/]+)/.*#\\1#'\'')",
+        "IMAGE_TAG=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#.*:([^:]+)$#\\1#'\'')",
+        "cat > docker-compose.loadtest.override.yml <<'\''YAML'\''\nservices:\n  solid-connection-dev:\n    environment:\n      - SPRING_PROFILES_ACTIVE=dev,loadtest\n      - AWS_REGION=ap-northeast-2\n      - SPRING_DATA_REDIS_HOST=127.0.0.1\n      - SPRING_DATA_REDIS_PORT=6379\nYAML",
+        "docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml down || true",
+        "OWNER_LOWERCASE=\"$OWNER_LOWERCASE\" IMAGE_TAG=\"$IMAGE_TAG\" docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml up -d solid-connection-dev"
+      ]
+    }')"
 
-  ssh -i "$STAGE_SSH_KEY" \
-    -o StrictHostKeyChecking=no \
-    "$STAGE_SSH_USER@$stage_public_ip" \
-    "APP_DIR='$STAGE_APP_DIR' COMPOSE_FILE='$STAGE_COMPOSE_FILE' bash -s" <<'REMOTE'
-set -euo pipefail
-
-cd "$APP_DIR"
-
-CURRENT_IMAGE="$(docker inspect -f '{{.Config.Image}}' solid-connection-dev 2>/dev/null || true)"
-if [[ -z "$CURRENT_IMAGE" ]]; then
-  echo "solid-connection-dev container is not running; cannot infer image tag" >&2
-  exit 1
-fi
-
-OWNER_LOWERCASE="$(echo "$CURRENT_IMAGE" | sed -E 's#^ghcr.io/([^/]+)/.*#\1#')"
-IMAGE_TAG="$(echo "$CURRENT_IMAGE" | sed -E 's#.*:([^:]+)$#\1#')"
-
-cat > docker-compose.loadtest.override.yml <<'YAML'
-services:
-  solid-connection-dev:
-    environment:
-      - SPRING_PROFILES_ACTIVE=dev,loadtest
-      - AWS_REGION=ap-northeast-2
-      - SPRING_DATA_REDIS_HOST=127.0.0.1
-      - SPRING_DATA_REDIS_PORT=6379
-YAML
-
-docker compose -f "$COMPOSE_FILE" -f docker-compose.loadtest.override.yml down || true
-OWNER_LOWERCASE="$OWNER_LOWERCASE" IMAGE_TAG="$IMAGE_TAG" \
-  docker compose -f "$COMPOSE_FILE" -f docker-compose.loadtest.override.yml up -d solid-connection-dev
-REMOTE
+  send_ssm_command "$stage_instance_id" "Switch stage app to load test datasource" "$stage_commands_json"
 fi
 
 if [[ "$SKIP_DATA_COPY" != "true" ]]; then

@@ -1,0 +1,65 @@
+name: Load Test Start
+
+on:
+  workflow_dispatch:
+    inputs:
+      switch_stage_to_loadtest:
+        description: "Restart stage app with dev,loadtest profiles"
+        required: true
+        default: true
+        type: boolean
+      copy_prod_data:
+        description: "Copy prod RDS data to load test RDS"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: load-test-environment
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.10.5"
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Start load test environment
+        run: |
+          args=()
+
+          if [ "${{ inputs.switch_stage_to_loadtest }}" = "true" ]; then
+            args+=(--switch-stage-to-loadtest)
+          fi
+
+          if [ "${{ inputs.copy_prod_data }}" != "true" ]; then
+            args+=(--skip-data-copy)
+          fi
+
+          bash scripts/load_test/start.sh "${args[@]}"
