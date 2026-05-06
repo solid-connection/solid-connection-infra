@@ -67,3 +67,28 @@ output "prod_db_password_parameter_name" {
   description = "SSM SecureString parameter name containing the prod DB password"
   value       = var.prod_db_password_parameter_name
 }
+
+output "load_generator_instance_id" {
+  description = "k6 load generator EC2 instance ID"
+  value       = aws_instance.load_generator.id
+}
+
+output "load_generator_private_ip" {
+  description = "k6 load generator private IP"
+  value       = aws_instance.load_generator.private_ip
+}
+
+output "load_generator_k6_dir" {
+  description = "Directory where k6 files are placed on the load generator"
+  value       = var.load_generator_k6_dir
+}
+
+output "load_test_target_base_url" {
+  description = "Default target base URL for k6"
+  value       = var.load_test_target_base_url
+}
+
+output "k6_prometheus_remote_write_url" {
+  description = "Default Prometheus remote-write URL for k6"
+  value       = var.k6_prometheus_remote_write_url
+}

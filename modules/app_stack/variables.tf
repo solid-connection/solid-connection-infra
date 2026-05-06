@@ -155,15 +155,3 @@ variable "alloy_version" {
   description = "Docker image tag for Grafana Alloy"
   type        = string
 }
-
-variable "enable_k6_files" {
-  description = "Whether to place k6 load test files on the API server during cloud-init"
-  type        = bool
-  default     = false
-}
-
-variable "k6_install_dir" {
-  description = "Directory where k6 load test files are placed"
-  type        = string
-  default     = "/home/ubuntu/solid-connection-load-test/k6"
-}

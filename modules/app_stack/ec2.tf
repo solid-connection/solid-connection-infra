@@ -22,56 +22,6 @@ data "cloudinit_config" "app_init" {
     filename     = "1_docker_install.sh"
   }
 
-  dynamic "part" {
-    for_each = var.enable_k6_files ? [1] : []
-
-    content {
-      content_type = "text/cloud-config"
-      content = yamlencode({
-        bootcmd = [
-          "mkdir -p ${var.k6_install_dir}/script"
-        ]
-        write_files = [
-          {
-            path        = "${var.k6_install_dir}/createPost.json"
-            owner       = "ubuntu:ubuntu"
-            permissions = "0644"
-            encoding    = "b64"
-            content     = filebase64("${path.module}/../../config/load-test/k6/createPost.json")
-          },
-          {
-            path        = "${var.k6_install_dir}/updatePost.json"
-            owner       = "ubuntu:ubuntu"
-            permissions = "0644"
-            encoding    = "b64"
-            content     = filebase64("${path.module}/../../config/load-test/k6/updatePost.json")
-          },
-          {
-            path        = "${var.k6_install_dir}/whole-user-flow.js"
-            owner       = "ubuntu:ubuntu"
-            permissions = "0644"
-            encoding    = "b64"
-            content     = filebase64("${path.module}/../../config/load-test/k6/whole-user-flow.js")
-          },
-          {
-            path        = "${var.k6_install_dir}/set_up_xk6.sh"
-            owner       = "ubuntu:ubuntu"
-            permissions = "0755"
-            encoding    = "b64"
-            content     = filebase64("${path.module}/../../config/load-test/k6/set_up_xk6.sh")
-          },
-          {
-            path        = "${var.k6_install_dir}/script/set-load-test.sh"
-            owner       = "ubuntu:ubuntu"
-            permissions = "0755"
-            encoding    = "b64"
-            content     = filebase64("${path.module}/../../config/load-test/k6/script/set-load-test.sh")
-          }
-        ]
-      })
-      filename = "2_k6_files.yml"
-    }
-  }
 }
 
 # API Server (EC2)

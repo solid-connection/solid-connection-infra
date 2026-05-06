@@ -41,6 +41,4 @@ module "stage_stack" {
   redis_version          = var.redis_version
   redis_exporter_version = var.redis_exporter_version
   alloy_version          = var.alloy_version
-
-  enable_k6_files = true
 }

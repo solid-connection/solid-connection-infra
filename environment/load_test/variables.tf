@@ -86,3 +86,39 @@ variable "load_test_parameter_prefix" {
   type        = string
   default     = "/solid-connection/loadtest"
 }
+
+variable "load_generator_instance_type" {
+  description = "EC2 instance type for the k6 load generator"
+  type        = string
+  default     = "c7i.xlarge"
+}
+
+variable "load_generator_instance_profile_name" {
+  description = "Existing IAM instance profile name for the k6 load generator. It must allow SSM RunCommand."
+  type        = string
+  default     = "solid-connection-load-test-generator"
+}
+
+variable "load_generator_root_volume_size" {
+  description = "Root volume size in GiB for the k6 load generator"
+  type        = number
+  default     = 20
+}
+
+variable "load_generator_k6_dir" {
+  description = "Directory where k6 files are placed on the load generator"
+  type        = string
+  default     = "/home/ubuntu/solid-connection-load-test/k6"
+}
+
+variable "load_test_target_base_url" {
+  description = "Default target base URL for k6"
+  type        = string
+  default     = "https://api.stage.solid-connection.com"
+}
+
+variable "k6_prometheus_remote_write_url" {
+  description = "Default Prometheus remote-write URL for k6"
+  type        = string
+  default     = "http://132.145.83.182:9090/api/v1/write"
+}

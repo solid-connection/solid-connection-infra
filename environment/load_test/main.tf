@@ -33,6 +33,21 @@ data "aws_subnets" "target" {
   }
 }
 
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  owners      = ["099720109477"]
+
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+  }
+
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+}
+
 data "aws_db_instance" "prod" {
   db_instance_identifier = var.prod_rds_identifier
 }
@@ -83,6 +98,53 @@ resource "aws_security_group_rule" "load_test_db_mysql" {
   protocol                 = "tcp"
   security_group_id        = aws_security_group.load_test_db.id
   source_security_group_id = each.value
+}
+
+resource "aws_security_group" "load_generator" {
+  name        = "sc-load-test-generator-sg"
+  description = "Security group for k6 load generator"
+  vpc_id      = data.aws_subnet.stage_api.vpc_id
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "solid-connection-load-test-generator-sg"
+  }
+}
+
+resource "aws_instance" "load_generator" {
+  ami                         = data.aws_ami.ubuntu.id
+  instance_type               = var.load_generator_instance_type
+  subnet_id                   = data.aws_instance.stage_api.subnet_id
+  vpc_security_group_ids      = [aws_security_group.load_generator.id]
+  associate_public_ip_address = true
+  iam_instance_profile        = var.load_generator_instance_profile_name
+
+  root_block_device {
+    volume_size = var.load_generator_root_volume_size
+    volume_type = "gp3"
+    encrypted   = true
+  }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    set -eux
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y curl jq
+    snap install amazon-ssm-agent --classic || true
+    systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+    systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+  EOF
+
+  tags = {
+    Name = "solid-connection-load-test-generator"
+  }
 }
 
 resource "aws_db_subnet_group" "load_test" {
