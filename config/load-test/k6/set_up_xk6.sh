@@ -11,8 +11,8 @@ export GOPATH=${BASE_DIR}/go-workspace
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 export XK6_BIN=${GOPATH}/bin/xk6
 export K6_OUT=xk6-prometheus-rw
-export K6_PROMETHEUS_RW_SERVER_URL=http://132.145.83.182:9090/api/v1/write
-export K6_PROMETHEUS_RW_TREND_STATS="p(90),p(95),p(99),avg,min,max"
+export K6_PROMETHEUS_RW_SERVER_URL=${K6_PROMETHEUS_RW_SERVER_URL:-http://132.145.83.182:9090/api/v1/write}
+export K6_PROMETHEUS_RW_TREND_STATS="${K6_PROMETHEUS_RW_TREND_STATS:-p(90),p(95),p(99),avg,min,max}"
 
 {
   echo "export BASE_DIR=${BASE_DIR}"

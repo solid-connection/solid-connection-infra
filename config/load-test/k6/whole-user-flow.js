@@ -13,16 +13,16 @@ const time = (() => {
   return `${mm}/${dd}  ${hh}:${min}`;
 })();
 
-const BASE_URL = 'https://api.stage.solid-connection.com';
+const BASE_URL = __ENV.BASE_URL || 'https://api.stage.solid-connection.com';
 const testId = 'whole-user-flow';
 
 export const options = {
     scenarios: {
         user_flow: {
             executor: 'per-vu-iterations',  // VU별 반복
-            vus: 10,                        // VU
-            iterations: 10,                 // VU 한 명당 실행할 횟수
-            maxDuration: '15m',             // 여유로 잡아 두기
+            vus: Number(__ENV.K6_VUS || 10),
+            iterations: Number(__ENV.K6_ITERATIONS || 10),
+            maxDuration: __ENV.K6_MAX_DURATION || '15m',
         },
       },
     tags: {
