@@ -3,15 +3,18 @@ set -euo pipefail
 
 TERRAFORM_DIR="environment/load_test"
 VAR_FILE="../../config/secrets/load_test.tfvars"
-DATABASE_NAME="solid_connection"
+DATABASE_NAME=""
 MIGRATION_PARAMETER_PREFIX="/solid-connection/loadtest/migration"
-PROD_DB_USERNAME_PARAMETER="/solid-connection/prod/spring.datasource.username"
-PROD_DB_PASSWORD_PARAMETER="/solid-connection/prod/spring.datasource.password"
-LOADTEST_DB_USERNAME_PARAMETER="/solid-connection/loadtest/spring.datasource.username"
-LOADTEST_DB_PASSWORD_PARAMETER="/solid-connection/loadtest/spring.datasource.password"
+PROD_DB_USERNAME_PARAMETER=""
+PROD_DB_PASSWORD_PARAMETER=""
+LOADTEST_DB_USERNAME_PARAMETER=""
+LOADTEST_DB_PASSWORD_PARAMETER=""
 SWITCH_STAGE_TO_LOADTEST="false"
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
+STAGE_K6_DIR="/home/ubuntu/solid-connection-load-test/k6"
+LOCAL_K6_DIR="config/load-test/k6"
+SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-1800}"
 SKIP_TERRAFORM_APPLY="false"
 SKIP_DATA_COPY="false"
 
@@ -22,15 +25,18 @@ Usage: scripts/load_test/start.sh [options]
 Options:
   --terraform-dir PATH          Default: environment/load_test
   --var-file PATH               Default: ../../config/secrets/load_test.tfvars
-  --prod-db-username-parameter  Default: /solid-connection/prod/spring.datasource.username
-  --prod-db-password-parameter  Default: /solid-connection/prod/spring.datasource.password
-  --loadtest-db-username-parameter  Default: /solid-connection/loadtest/spring.datasource.username
-  --loadtest-db-password-parameter  Default: /solid-connection/loadtest/spring.datasource.password
-  --database-name VALUE         Default: solid_connection
+  --prod-db-username-parameter  Default: Terraform output prod_db_username_parameter_name
+  --prod-db-password-parameter  Default: Terraform output prod_db_password_parameter_name
+  --loadtest-db-username-parameter  Default: Terraform output load_test_db_username_parameter_name
+  --loadtest-db-password-parameter  Default: Terraform output load_test_db_password_parameter_name
+  --database-name VALUE         Default: Terraform output load_test_db_name
   --migration-prefix VALUE      Default: /solid-connection/loadtest/migration
   --switch-stage-to-loadtest    Restart stage app through SSM with dev,loadtest profiles
   --stage-app-dir PATH          Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE    Default: docker-compose.dev.yml
+  --stage-k6-dir PATH           Default: /home/ubuntu/solid-connection-load-test/k6
+  --local-k6-dir PATH           Default: config/load-test/k6
+  --ssm-command-timeout-seconds Default: 1800
   --skip-terraform-apply
   --skip-data-copy
   -h, --help
@@ -50,6 +56,9 @@ while [[ $# -gt 0 ]]; do
     --switch-stage-to-loadtest) SWITCH_STAGE_TO_LOADTEST="true"; shift ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
+    --stage-k6-dir) STAGE_K6_DIR="$2"; shift 2 ;;
+    --local-k6-dir) LOCAL_K6_DIR="$2"; shift 2 ;;
+    --ssm-command-timeout-seconds) SSM_COMMAND_TIMEOUT_SECONDS="$2"; shift 2 ;;
     --skip-terraform-apply) SKIP_TERRAFORM_APPLY="true"; shift ;;
     --skip-data-copy) SKIP_DATA_COPY="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -76,6 +85,7 @@ require_command() {
 require_command terraform
 require_command aws
 require_command jq
+require_command base64
 
 tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
@@ -87,6 +97,7 @@ send_ssm_command() {
   local commands_json="$3"
 
   local command_id
+  local started_at
   command_id="$(aws ssm send-command \
     --instance-ids "$instance_id" \
     --document-name "AWS-RunShellScript" \
@@ -94,6 +105,7 @@ send_ssm_command() {
     --parameters "$commands_json" \
     --query "Command.CommandId" \
     --output text)"
+  started_at="$(date +%s)"
 
   local status
   while true; do
@@ -103,6 +115,15 @@ send_ssm_command() {
       --instance-id "$instance_id" \
       --query "Status" \
       --output text 2>/dev/null || true)"
+
+    if (( $(date +%s) - started_at > SSM_COMMAND_TIMEOUT_SECONDS )); then
+      aws ssm get-command-invocation \
+        --command-id "$command_id" \
+        --instance-id "$instance_id" \
+        --output json || true
+      echo "SSM command timed out after ${SSM_COMMAND_TIMEOUT_SECONDS}s: $comment" >&2
+      exit 1
+    fi
 
     case "$status" in
       Pending|InProgress|Delayed|"") continue ;;
@@ -117,6 +138,51 @@ send_ssm_command() {
         ;;
     esac
   done
+}
+
+file_base64() {
+  base64 "$1" | tr -d '\n'
+}
+
+sync_stage_k6_files() {
+  local instance_id="$1"
+  local commands
+  commands="$(jq -cn \
+    --arg target_dir "$STAGE_K6_DIR" \
+    '{ commands: ["set -euo pipefail", "mkdir -p \($target_dir)/script"] }')"
+
+  local relative_path
+  for relative_path in \
+    "createPost.json" \
+    "updatePost.json" \
+    "whole-user-flow.js" \
+    "set_up_xk6.sh" \
+    "script/set-load-test.sh"; do
+    local source_path="${LOCAL_K6_DIR}/${relative_path}"
+    if [[ ! -f "$source_path" ]]; then
+      echo "Missing k6 file: $source_path" >&2
+      exit 1
+    fi
+
+    commands="$(jq -cn \
+      --argjson current "$commands" \
+      --arg target "${STAGE_K6_DIR}/${relative_path}" \
+      --arg content "$(file_base64 "$source_path")" \
+      '$current | .commands += [
+        "mkdir -p \"$(dirname \"\($target)\")\"",
+        "printf %s \($content | @sh) | base64 -d > \($target | @sh)"
+      ]')"
+  done
+
+  commands="$(jq -cn \
+    --argjson current "$commands" \
+    --arg target_dir "$STAGE_K6_DIR" \
+    '$current | .commands += [
+      "chmod +x \($target_dir)/set_up_xk6.sh \($target_dir)/script/set-load-test.sh",
+      "chown -R ubuntu:ubuntu \($target_dir)"
+    ]')"
+
+  send_ssm_command "$instance_id" "Sync k6 files to stage EC2" "$commands"
 }
 
 delete_temp_parameters() {
@@ -138,27 +204,17 @@ prod_endpoint="$(tf_output prod_rds_endpoint)"
 prod_port="$(tf_output prod_rds_port)"
 loadtest_endpoint="$(tf_output load_test_rds_endpoint)"
 loadtest_port="$(tf_output load_test_rds_port)"
+loadtest_db_name="$(tf_output load_test_db_name)"
+tf_prod_db_username_parameter="$(tf_output prod_db_username_parameter_name)"
+tf_prod_db_password_parameter="$(tf_output prod_db_password_parameter_name)"
+tf_loadtest_db_username_parameter="$(tf_output load_test_db_username_parameter_name)"
+tf_loadtest_db_password_parameter="$(tf_output load_test_db_password_parameter_name)"
 
-if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
-  stage_commands_json="$(jq -cn \
-    --arg app_dir "$STAGE_APP_DIR" \
-    --arg compose_file "$STAGE_COMPOSE_FILE" \
-    '{
-      commands: [
-        "set -euo pipefail",
-        "cd \($app_dir)",
-        "CURRENT_IMAGE=$(docker inspect -f '\''{{.Config.Image}}'\'' solid-connection-dev 2>/dev/null || true)",
-        "if [ -z \"$CURRENT_IMAGE\" ]; then echo \"solid-connection-dev container is not running; cannot infer image tag\" >&2; exit 1; fi",
-        "OWNER_LOWERCASE=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#^ghcr.io/([^/]+)/.*#\\1#'\'')",
-        "IMAGE_TAG=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#.*:([^:]+)$#\\1#'\'')",
-        "cat > docker-compose.loadtest.override.yml <<'\''YAML'\''\nservices:\n  solid-connection-dev:\n    environment:\n      - SPRING_PROFILES_ACTIVE=dev,loadtest\n      - AWS_REGION=ap-northeast-2\n      - SPRING_DATA_REDIS_HOST=127.0.0.1\n      - SPRING_DATA_REDIS_PORT=6379\nYAML",
-        "docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml down || true",
-        "OWNER_LOWERCASE=\"$OWNER_LOWERCASE\" IMAGE_TAG=\"$IMAGE_TAG\" docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml up -d solid-connection-dev"
-      ]
-    }')"
-
-  send_ssm_command "$stage_instance_id" "Switch stage app to load test datasource" "$stage_commands_json"
-fi
+DATABASE_NAME="${DATABASE_NAME:-$loadtest_db_name}"
+PROD_DB_USERNAME_PARAMETER="${PROD_DB_USERNAME_PARAMETER:-$tf_prod_db_username_parameter}"
+PROD_DB_PASSWORD_PARAMETER="${PROD_DB_PASSWORD_PARAMETER:-$tf_prod_db_password_parameter}"
+LOADTEST_DB_USERNAME_PARAMETER="${LOADTEST_DB_USERNAME_PARAMETER:-$tf_loadtest_db_username_parameter}"
+LOADTEST_DB_PASSWORD_PARAMETER="${LOADTEST_DB_PASSWORD_PARAMETER:-$tf_loadtest_db_password_parameter}"
 
 if [[ "$SKIP_DATA_COPY" != "true" ]]; then
   trap delete_temp_parameters EXIT
@@ -226,6 +282,7 @@ if [[ "$SKIP_DATA_COPY" != "true" ]]; then
         "LOAD_USER=$(aws ssm get-parameter --name \($prefix)/loadtest-db-username --query Parameter.Value --output text)",
         "LOAD_PASSWORD=$(aws ssm get-parameter --name \($prefix)/loadtest-db-password --with-decryption --query Parameter.Value --output text)",
         "DUMP_FILE=/tmp/solid-connection-loadtest-$(date +%Y%m%d%H%M%S).sql.gz",
+        "trap '\''rm -f \"$DUMP_FILE\"'\'' EXIT",
         "MYSQL_PWD=\"$PROD_PASSWORD\" mysqldump --single-transaction --set-gtid-purged=OFF --column-statistics=0 -h \($prod_endpoint) -P \($prod_port) -u \"$PROD_USER\" \($database) | gzip > \"$DUMP_FILE\"",
         "MYSQL_PWD=\"$LOAD_PASSWORD\" mysql -h \($loadtest_endpoint) -P \($loadtest_port) -u \"$LOAD_USER\" -e \"DROP DATABASE IF EXISTS \\\`\($database)\\\`; CREATE DATABASE \\\`\($database)\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\"",
         "gunzip -c \"$DUMP_FILE\" | MYSQL_PWD=\"$LOAD_PASSWORD\" mysql -h \($loadtest_endpoint) -P \($loadtest_port) -u \"$LOAD_USER\" \($database)",
@@ -234,6 +291,29 @@ if [[ "$SKIP_DATA_COPY" != "true" ]]; then
     }')"
 
   send_ssm_command "$prod_instance_id" "Copy prod RDS data to load test RDS" "$copy_commands_json"
+fi
+
+if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
+  sync_stage_k6_files "$stage_instance_id"
+
+  stage_commands_json="$(jq -cn \
+    --arg app_dir "$STAGE_APP_DIR" \
+    --arg compose_file "$STAGE_COMPOSE_FILE" \
+    '{
+      commands: [
+        "set -euo pipefail",
+        "cd \($app_dir)",
+        "CURRENT_IMAGE=$(docker inspect -f '\''{{.Config.Image}}'\'' solid-connection-dev 2>/dev/null || true)",
+        "if [ -z \"$CURRENT_IMAGE\" ]; then echo \"solid-connection-dev container is not running; cannot infer image tag\" >&2; exit 1; fi",
+        "OWNER_LOWERCASE=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#^ghcr.io/([^/]+)/.*#\\1#'\'')",
+        "IMAGE_TAG=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#.*:([^:]+)$#\\1#'\'')",
+        "cat > docker-compose.loadtest.override.yml <<'\''YAML'\''\nservices:\n  solid-connection-dev:\n    environment:\n      - SPRING_PROFILES_ACTIVE=dev,loadtest\n      - AWS_REGION=ap-northeast-2\n      - SPRING_DATA_REDIS_HOST=127.0.0.1\n      - SPRING_DATA_REDIS_PORT=6379\nYAML",
+        "docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml down || true",
+        "OWNER_LOWERCASE=\"$OWNER_LOWERCASE\" IMAGE_TAG=\"$IMAGE_TAG\" docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml up -d solid-connection-dev"
+      ]
+    }')"
+
+  send_ssm_command "$stage_instance_id" "Switch stage app to load test datasource" "$stage_commands_json"
 fi
 
 echo "Load test environment is ready."

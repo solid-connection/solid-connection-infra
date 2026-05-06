@@ -6,6 +6,7 @@ VAR_FILE="../../config/secrets/load_test.tfvars"
 RESTORE_STAGE_DEV="false"
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
+SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-900}"
 SKIP_TERRAFORM_DESTROY="false"
 
 usage() {
@@ -18,6 +19,7 @@ Options:
   --restore-stage-dev            Restart stage app through SSM with dev profile
   --stage-app-dir PATH           Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE     Default: docker-compose.dev.yml
+  --ssm-command-timeout-seconds  Default: 900
   --skip-terraform-destroy
   -h, --help
 EOF
@@ -30,6 +32,7 @@ while [[ $# -gt 0 ]]; do
     --restore-stage-dev) RESTORE_STAGE_DEV="true"; shift ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
+    --ssm-command-timeout-seconds) SSM_COMMAND_TIMEOUT_SECONDS="$2"; shift 2 ;;
     --skip-terraform-destroy) SKIP_TERRAFORM_DESTROY="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
@@ -57,6 +60,7 @@ send_ssm_command() {
   local commands_json="$3"
 
   local command_id
+  local started_at
   command_id="$(aws ssm send-command \
     --instance-ids "$instance_id" \
     --document-name "AWS-RunShellScript" \
@@ -64,6 +68,7 @@ send_ssm_command() {
     --parameters "$commands_json" \
     --query "Command.CommandId" \
     --output text)"
+  started_at="$(date +%s)"
 
   local status
   while true; do
@@ -73,6 +78,15 @@ send_ssm_command() {
       --instance-id "$instance_id" \
       --query "Status" \
       --output text 2>/dev/null || true)"
+
+    if (( $(date +%s) - started_at > SSM_COMMAND_TIMEOUT_SECONDS )); then
+      aws ssm get-command-invocation \
+        --command-id "$command_id" \
+        --instance-id "$instance_id" \
+        --output json || true
+      echo "SSM command timed out after ${SSM_COMMAND_TIMEOUT_SECONDS}s: $comment" >&2
+      exit 1
+    fi
 
     case "$status" in
       Pending|InProgress|Delayed|"") continue ;;

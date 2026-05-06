@@ -293,6 +293,20 @@ function getGPAs(auth) {
     });
 }
 
+function requireArray(value, name) {
+    if (!Array.isArray(value) || value.length === 0) {
+        fail(`${name} response is empty or invalid`);
+    }
+    return value;
+}
+
+function requireId(value, name) {
+    if (!value || value.id === undefined || value.id === null) {
+        fail(`${name} response does not contain id`);
+    }
+    return value.id;
+}
+
 // applications
 function apply(gpaScoreId, languageTestScoreId, universityId, auth) {
     http.post(`${BASE_URL}/applications`, JSON.stringify({
@@ -323,7 +337,7 @@ function getCompetitors(auth) {
 }
 
 export default function () {
-    checkNicknameExists(encodeURIComponent('닉네임'));
+    checkNicknameExists(encodeURIComponent('loadtest-user'));
     const token = login();
     const auth = authHeadersWithTags(token);
 
@@ -331,8 +345,8 @@ export default function () {
     getRecommendedUniversities(auth);
 
     const uniSearchRes = searchUniversities(''); // 이번학기 열린 대학 중 랜덤하게 id 가져오기
-    const uniList = uniSearchRes.json();
-    const universityId = uniList[Math.floor(Math.random() * uniList.length)].id;
+    const uniList = requireArray(uniSearchRes.json(), 'universities/search');
+    const universityId = requireId(uniList[Math.floor(Math.random() * uniList.length)], 'universities/search item');
 
     likeUniversity(universityId, auth);
     isLikedUniversity(universityId, auth);
@@ -358,12 +372,12 @@ export default function () {
     deletePost(postId, auth);
 
     const langRes = getLanguageTests(auth);
-    const langList = langRes.json().languageTestScoreStatusResponseList;
-    const languageTestScoreId = langList[0].id;
+    const langList = requireArray(langRes.json().languageTestScoreStatusResponseList, 'scores/language-tests');
+    const languageTestScoreId = requireId(langList[0], 'scores/language-tests item');
 
     const gpaRes = getGPAs(auth);
-    const gpaList = gpaRes.json().gpaScoreStatusResponseList;
-    const gpaScoreId = gpaList[0].id;
+    const gpaList = requireArray(gpaRes.json().gpaScoreStatusResponseList, 'scores/gpas');
+    const gpaScoreId = requireId(gpaList[0], 'scores/gpas item');
 
     apply(gpaScoreId, languageTestScoreId, universityId, auth);
     getCompetitors(auth);

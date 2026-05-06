@@ -40,6 +40,18 @@ variable "load_test_db_password_parameter_name" {
   type        = string
 }
 
+variable "prod_db_username_parameter_name" {
+  description = "SSM parameter name containing the prod DB username"
+  type        = string
+  default     = "/solid-connection/prod/spring.datasource.username"
+}
+
+variable "prod_db_password_parameter_name" {
+  description = "SSM SecureString parameter name containing the prod DB password"
+  type        = string
+  default     = "/solid-connection/prod/spring.datasource.password"
+}
+
 variable "kms_key_arn" {
   description = "KMS key ARN for RDS storage encryption"
   type        = string

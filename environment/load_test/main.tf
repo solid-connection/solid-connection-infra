@@ -1,14 +1,3 @@
-data "aws_vpc" "default" {
-  default = true
-}
-
-data "aws_subnets" "default" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
-}
-
 data "aws_instance" "prod_api" {
   filter {
     name   = "tag:Name"
@@ -30,6 +19,17 @@ data "aws_instance" "stage_api" {
   filter {
     name   = "instance-state-name"
     values = ["running"]
+  }
+}
+
+data "aws_subnet" "stage_api" {
+  id = data.aws_instance.stage_api.subnet_id
+}
+
+data "aws_subnets" "target" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_subnet.stage_api.vpc_id]
   }
 }
 
@@ -59,7 +59,7 @@ locals {
 resource "aws_security_group" "load_test_db" {
   name        = "sc-load-test-db-sg"
   description = "Security group for load test RDS"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = data.aws_subnet.stage_api.vpc_id
 
   egress {
     from_port   = 0
@@ -87,7 +87,7 @@ resource "aws_security_group_rule" "load_test_db_mysql" {
 
 resource "aws_db_subnet_group" "load_test" {
   name       = "sc-load-test-db-subnet-group"
-  subnet_ids = data.aws_subnets.default.ids
+  subnet_ids = data.aws_subnets.target.ids
 
   tags = {
     Name = "solid-connection-load-test-db-subnet-group"
