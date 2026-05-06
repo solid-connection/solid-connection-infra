@@ -13,6 +13,11 @@ on:
         required: true
         default: true
         type: boolean
+      load_generator_instance_type:
+        description: "k6 load generator EC2 instance type"
+        required: true
+        default: "c7i.xlarge"
+        type: string
 
 permissions:
   id-token: write
@@ -37,7 +42,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_LOAD_TEST_ROLE_ARN }}
           aws-region: ap-northeast-2
 
       - uses: hashicorp/setup-terraform@v3
@@ -52,6 +57,12 @@ jobs:
 
       - name: Start load test environment
         run: |
+          export TF_VAR_load_generator_instance_type="${{ inputs.load_generator_instance_type }}"
+
+          if [ -n "${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}" ]; then
+            export TF_VAR_load_generator_instance_profile_name="${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}"
+          fi
+
           args=()
 
           if [ "${{ inputs.switch_stage_to_loadtest }}" = "true" ]; then

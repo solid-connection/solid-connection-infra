@@ -37,7 +37,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_LOAD_TEST_ROLE_ARN }}
           aws-region: ap-northeast-2
 
       - uses: hashicorp/setup-terraform@v3

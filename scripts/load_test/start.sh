@@ -12,8 +12,6 @@ LOADTEST_DB_PASSWORD_PARAMETER=""
 SWITCH_STAGE_TO_LOADTEST="false"
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
-STAGE_K6_DIR="/home/ubuntu/solid-connection-load-test/k6"
-LOCAL_K6_DIR="config/load-test/k6"
 SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-1800}"
 SKIP_TERRAFORM_APPLY="false"
 SKIP_DATA_COPY="false"
@@ -34,8 +32,6 @@ Options:
   --switch-stage-to-loadtest    Restart stage app through SSM with dev,loadtest profiles
   --stage-app-dir PATH          Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE    Default: docker-compose.dev.yml
-  --stage-k6-dir PATH           Default: /home/ubuntu/solid-connection-load-test/k6
-  --local-k6-dir PATH           Default: config/load-test/k6
   --ssm-command-timeout-seconds Default: 1800
   --skip-terraform-apply
   --skip-data-copy
@@ -56,8 +52,6 @@ while [[ $# -gt 0 ]]; do
     --switch-stage-to-loadtest) SWITCH_STAGE_TO_LOADTEST="true"; shift ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
-    --stage-k6-dir) STAGE_K6_DIR="$2"; shift 2 ;;
-    --local-k6-dir) LOCAL_K6_DIR="$2"; shift 2 ;;
     --ssm-command-timeout-seconds) SSM_COMMAND_TIMEOUT_SECONDS="$2"; shift 2 ;;
     --skip-terraform-apply) SKIP_TERRAFORM_APPLY="true"; shift ;;
     --skip-data-copy) SKIP_DATA_COPY="true"; shift ;;
@@ -85,7 +79,6 @@ require_command() {
 require_command terraform
 require_command aws
 require_command jq
-require_command base64
 
 tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
@@ -140,51 +133,6 @@ send_ssm_command() {
   done
 }
 
-file_base64() {
-  base64 "$1" | tr -d '\n'
-}
-
-sync_stage_k6_files() {
-  local instance_id="$1"
-  local commands
-  commands="$(jq -cn \
-    --arg target_dir "$STAGE_K6_DIR" \
-    '{ commands: ["set -euo pipefail", "mkdir -p \($target_dir)/script"] }')"
-
-  local relative_path
-  for relative_path in \
-    "createPost.json" \
-    "updatePost.json" \
-    "whole-user-flow.js" \
-    "set_up_xk6.sh" \
-    "script/set-load-test.sh"; do
-    local source_path="${LOCAL_K6_DIR}/${relative_path}"
-    if [[ ! -f "$source_path" ]]; then
-      echo "Missing k6 file: $source_path" >&2
-      exit 1
-    fi
-
-    commands="$(jq -cn \
-      --argjson current "$commands" \
-      --arg target "${STAGE_K6_DIR}/${relative_path}" \
-      --arg content "$(file_base64 "$source_path")" \
-      '$current | .commands += [
-        "mkdir -p \"$(dirname \"\($target)\")\"",
-        "printf %s \($content | @sh) | base64 -d > \($target | @sh)"
-      ]')"
-  done
-
-  commands="$(jq -cn \
-    --argjson current "$commands" \
-    --arg target_dir "$STAGE_K6_DIR" \
-    '$current | .commands += [
-      "chmod +x \($target_dir)/set_up_xk6.sh \($target_dir)/script/set-load-test.sh",
-      "chown -R ubuntu:ubuntu \($target_dir)"
-    ]')"
-
-  send_ssm_command "$instance_id" "Sync k6 files to stage EC2" "$commands"
-}
-
 delete_temp_parameters() {
   aws ssm delete-parameter --name "$MIGRATION_PARAMETER_PREFIX/prod-db-username" >/dev/null 2>&1 || true
   aws ssm delete-parameter --name "$MIGRATION_PARAMETER_PREFIX/prod-db-password" >/dev/null 2>&1 || true
@@ -204,6 +152,7 @@ prod_endpoint="$(tf_output prod_rds_endpoint)"
 prod_port="$(tf_output prod_rds_port)"
 loadtest_endpoint="$(tf_output load_test_rds_endpoint)"
 loadtest_port="$(tf_output load_test_rds_port)"
+load_generator_instance_id="$(tf_output load_generator_instance_id)"
 loadtest_db_name="$(tf_output load_test_db_name)"
 tf_prod_db_username_parameter="$(tf_output prod_db_username_parameter_name)"
 tf_prod_db_password_parameter="$(tf_output prod_db_password_parameter_name)"
@@ -294,8 +243,6 @@ if [[ "$SKIP_DATA_COPY" != "true" ]]; then
 fi
 
 if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
-  sync_stage_k6_files "$stage_instance_id"
-
   stage_commands_json="$(jq -cn \
     --arg app_dir "$STAGE_APP_DIR" \
     --arg compose_file "$STAGE_COMPOSE_FILE" \
@@ -318,5 +265,6 @@ fi
 
 echo "Load test environment is ready."
 echo "RDS endpoint: ${loadtest_endpoint}:${loadtest_port}"
+echo "Load generator instance: ${load_generator_instance_id}"
 echo "Stage instance: ${stage_instance_id}"
 echo "Stage public IP: ${stage_public_ip}"
