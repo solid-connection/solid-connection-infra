@@ -293,9 +293,21 @@ function getGPAs(auth) {
     });
 }
 
-function requireArray(value, name) {
+function requireJson(res, name) {
+    if (res.status < 200 || res.status >= 300) {
+        fail(`${name} failed with status ${res.status}: ${res.body}`);
+    }
+
+    try {
+        return res.json();
+    } catch (error) {
+        fail(`${name} returned invalid JSON: ${error.message}`);
+    }
+}
+
+function requireArray(value, name, status) {
     if (!Array.isArray(value) || value.length === 0) {
-        fail(`${name} response is empty or invalid`);
+        fail(`${name} response is empty or invalid (status: ${status})`);
     }
     return value;
 }
@@ -345,7 +357,8 @@ export default function () {
     getRecommendedUniversities(auth);
 
     const uniSearchRes = searchUniversities(''); // 이번학기 열린 대학 중 랜덤하게 id 가져오기
-    const uniList = requireArray(uniSearchRes.json(), 'universities/search');
+    const uniSearchBody = requireJson(uniSearchRes, 'searchUniversities');
+    const uniList = requireArray(uniSearchBody, 'searchUniversities', uniSearchRes.status);
     const universityId = requireId(uniList[Math.floor(Math.random() * uniList.length)], 'universities/search item');
 
     likeUniversity(universityId, auth);
@@ -372,11 +385,21 @@ export default function () {
     deletePost(postId, auth);
 
     const langRes = getLanguageTests(auth);
-    const langList = requireArray(langRes.json().languageTestScoreStatusResponseList, 'scores/language-tests');
+    const langBody = requireJson(langRes, 'getLanguageTests');
+    const langList = requireArray(
+        langBody && langBody.languageTestScoreStatusResponseList,
+        'getLanguageTests.languageTestScoreStatusResponseList',
+        langRes.status
+    );
     const languageTestScoreId = requireId(langList[0], 'scores/language-tests item');
 
     const gpaRes = getGPAs(auth);
-    const gpaList = requireArray(gpaRes.json().gpaScoreStatusResponseList, 'scores/gpas');
+    const gpaBody = requireJson(gpaRes, 'getGPAs');
+    const gpaList = requireArray(
+        gpaBody && gpaBody.gpaScoreStatusResponseList,
+        'getGPAs.gpaScoreStatusResponseList',
+        gpaRes.status
+    );
     const gpaScoreId = requireId(gpaList[0], 'scores/gpas item');
 
     apply(gpaScoreId, languageTestScoreId, universityId, auth);
