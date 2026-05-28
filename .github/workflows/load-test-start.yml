@@ -8,16 +8,6 @@ on:
         required: true
         default: true
         type: boolean
-      copy_prod_data:
-        description: "Copy prod RDS data to load test RDS"
-        required: true
-        default: true
-        type: boolean
-      load_generator_instance_type:
-        description: "k6 load generator EC2 instance type"
-        required: true
-        default: "c7i.xlarge"
-        type: string
 
 permissions:
   id-token: write
@@ -57,7 +47,7 @@ jobs:
 
       - name: Start load test environment
         run: |
-          export TF_VAR_load_generator_instance_type="${{ inputs.load_generator_instance_type }}"
+          export TF_VAR_load_generator_instance_type="c7i.large"
 
           if [ -n "${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}" ]; then
             export TF_VAR_load_generator_instance_profile_name="${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}"
@@ -67,10 +57,6 @@ jobs:
 
           if [ "${{ inputs.switch_stage_to_loadtest }}" = "true" ]; then
             args+=(--switch-stage-to-loadtest)
-          fi
-
-          if [ "${{ inputs.copy_prod_data }}" != "true" ]; then
-            args+=(--skip-data-copy)
           fi
 
           bash scripts/load_test/start.sh "${args[@]}"

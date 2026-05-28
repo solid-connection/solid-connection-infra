@@ -52,19 +52,22 @@ data "aws_db_instance" "prod" {
   db_instance_identifier = var.prod_rds_identifier
 }
 
-data "aws_ssm_parameter" "db_root_username" {
-  name = var.load_test_db_username_parameter_name
+data "aws_db_snapshot" "latest_prod" {
+  db_instance_identifier = var.prod_rds_identifier
+  most_recent            = true
+  snapshot_type          = "automated"
 }
 
-data "aws_ssm_parameter" "db_root_password" {
-  name            = var.load_test_db_password_parameter_name
+data "aws_ssm_parameter" "prod_db_username" {
+  name = var.prod_db_username_parameter_name
+}
+
+data "aws_ssm_parameter" "prod_db_password" {
+  name            = var.prod_db_password_parameter_name
   with_decryption = true
 }
 
 locals {
-  db_root_username = data.aws_ssm_parameter.db_root_username.value
-  db_root_password = data.aws_ssm_parameter.db_root_password.value
-
   source_security_group_ids = setunion(
     data.aws_instance.prod_api.vpc_security_group_ids,
     data.aws_instance.stage_api.vpc_security_group_ids
@@ -158,14 +161,9 @@ resource "aws_db_subnet_group" "load_test" {
 
 resource "aws_db_instance" "load_test" {
   identifier              = var.rds_identifier
-  allocated_storage       = var.allocated_storage
-  engine                  = "mysql"
-  engine_version          = var.db_engine_version
   instance_class          = var.db_instance_class
-  db_name                 = var.db_name
-  username                = local.db_root_username
-  password                = local.db_root_password
   parameter_group_name    = var.db_parameter_group_name
+  snapshot_identifier     = data.aws_db_snapshot.latest_prod.id
   db_subnet_group_name    = aws_db_subnet_group.load_test.name
   vpc_security_group_ids  = [aws_security_group.load_test_db.id]
   publicly_accessible     = false
@@ -192,14 +190,14 @@ resource "aws_ssm_parameter" "load_test_datasource_url" {
 resource "aws_ssm_parameter" "load_test_datasource_username" {
   name      = "${var.load_test_parameter_prefix}/spring.datasource.username"
   type      = "String"
-  value     = local.db_root_username
+  value     = data.aws_ssm_parameter.prod_db_username.value
   overwrite = true
 }
 
 resource "aws_ssm_parameter" "load_test_datasource_password" {
   name      = "${var.load_test_parameter_prefix}/spring.datasource.password"
   type      = "SecureString"
-  value     = local.db_root_password
+  value     = data.aws_ssm_parameter.prod_db_password.value
   key_id    = var.ssm_kms_key_id
   overwrite = true
   tier      = "Standard"

@@ -29,7 +29,7 @@ output "prod_rds_port" {
 }
 
 output "prod_api_instance_id" {
-  description = "Prod API EC2 instance ID used to run migration commands"
+  description = "Prod API EC2 instance ID whose security group can access load-test RDS"
   value       = data.aws_instance.prod_api.id
 }
 

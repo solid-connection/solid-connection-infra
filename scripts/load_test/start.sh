@@ -4,17 +4,11 @@ set -euo pipefail
 TERRAFORM_DIR="environment/load_test"
 VAR_FILE="../../config/secrets/load_test.tfvars"
 DATABASE_NAME=""
-MIGRATION_PARAMETER_PREFIX="/solid-connection/loadtest/migration"
-PROD_DB_USERNAME_PARAMETER=""
-PROD_DB_PASSWORD_PARAMETER=""
-LOADTEST_DB_USERNAME_PARAMETER=""
-LOADTEST_DB_PASSWORD_PARAMETER=""
 SWITCH_STAGE_TO_LOADTEST="false"
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
 SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-1800}"
 SKIP_TERRAFORM_APPLY="false"
-SKIP_DATA_COPY="false"
 
 usage() {
   cat <<'EOF'
@@ -23,18 +17,12 @@ Usage: scripts/load_test/start.sh [options]
 Options:
   --terraform-dir PATH          Default: environment/load_test
   --var-file PATH               Default: ../../config/secrets/load_test.tfvars
-  --prod-db-username-parameter  Default: Terraform output prod_db_username_parameter_name
-  --prod-db-password-parameter  Default: Terraform output prod_db_password_parameter_name
-  --loadtest-db-username-parameter  Default: Terraform output load_test_db_username_parameter_name
-  --loadtest-db-password-parameter  Default: Terraform output load_test_db_password_parameter_name
   --database-name VALUE         Default: Terraform output load_test_db_name
-  --migration-prefix VALUE      Default: /solid-connection/loadtest/migration
   --switch-stage-to-loadtest    Restart stage app through SSM with dev,loadtest profiles
   --stage-app-dir PATH          Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE    Default: docker-compose.dev.yml
   --ssm-command-timeout-seconds Default: 1800
   --skip-terraform-apply
-  --skip-data-copy
   -h, --help
 EOF
 }
@@ -43,18 +31,12 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --terraform-dir) TERRAFORM_DIR="$2"; shift 2 ;;
     --var-file) VAR_FILE="$2"; shift 2 ;;
-    --prod-db-username-parameter) PROD_DB_USERNAME_PARAMETER="$2"; shift 2 ;;
-    --prod-db-password-parameter) PROD_DB_PASSWORD_PARAMETER="$2"; shift 2 ;;
-    --loadtest-db-username-parameter) LOADTEST_DB_USERNAME_PARAMETER="$2"; shift 2 ;;
-    --loadtest-db-password-parameter) LOADTEST_DB_PASSWORD_PARAMETER="$2"; shift 2 ;;
     --database-name) DATABASE_NAME="$2"; shift 2 ;;
-    --migration-prefix) MIGRATION_PARAMETER_PREFIX="$2"; shift 2 ;;
     --switch-stage-to-loadtest) SWITCH_STAGE_TO_LOADTEST="true"; shift ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
     --ssm-command-timeout-seconds) SSM_COMMAND_TIMEOUT_SECONDS="$2"; shift 2 ;;
     --skip-terraform-apply) SKIP_TERRAFORM_APPLY="true"; shift ;;
-    --skip-data-copy) SKIP_DATA_COPY="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -133,114 +115,19 @@ send_ssm_command() {
   done
 }
 
-delete_temp_parameters() {
-  aws ssm delete-parameter --name "$MIGRATION_PARAMETER_PREFIX/prod-db-username" >/dev/null 2>&1 || true
-  aws ssm delete-parameter --name "$MIGRATION_PARAMETER_PREFIX/prod-db-password" >/dev/null 2>&1 || true
-  aws ssm delete-parameter --name "$MIGRATION_PARAMETER_PREFIX/loadtest-db-username" >/dev/null 2>&1 || true
-  aws ssm delete-parameter --name "$MIGRATION_PARAMETER_PREFIX/loadtest-db-password" >/dev/null 2>&1 || true
-}
-
 if [[ "$SKIP_TERRAFORM_APPLY" != "true" ]]; then
   terraform -chdir="$TERRAFORM_DIR" init
   terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE"
 fi
 
-prod_instance_id="$(tf_output prod_api_instance_id)"
 stage_instance_id="$(tf_output stage_api_instance_id)"
 stage_public_ip="$(tf_output stage_api_public_ip)"
-prod_endpoint="$(tf_output prod_rds_endpoint)"
-prod_port="$(tf_output prod_rds_port)"
 loadtest_endpoint="$(tf_output load_test_rds_endpoint)"
 loadtest_port="$(tf_output load_test_rds_port)"
 load_generator_instance_id="$(tf_output load_generator_instance_id)"
 loadtest_db_name="$(tf_output load_test_db_name)"
-tf_prod_db_username_parameter="$(tf_output prod_db_username_parameter_name)"
-tf_prod_db_password_parameter="$(tf_output prod_db_password_parameter_name)"
-tf_loadtest_db_username_parameter="$(tf_output load_test_db_username_parameter_name)"
-tf_loadtest_db_password_parameter="$(tf_output load_test_db_password_parameter_name)"
 
 DATABASE_NAME="${DATABASE_NAME:-$loadtest_db_name}"
-PROD_DB_USERNAME_PARAMETER="${PROD_DB_USERNAME_PARAMETER:-$tf_prod_db_username_parameter}"
-PROD_DB_PASSWORD_PARAMETER="${PROD_DB_PASSWORD_PARAMETER:-$tf_prod_db_password_parameter}"
-LOADTEST_DB_USERNAME_PARAMETER="${LOADTEST_DB_USERNAME_PARAMETER:-$tf_loadtest_db_username_parameter}"
-LOADTEST_DB_PASSWORD_PARAMETER="${LOADTEST_DB_PASSWORD_PARAMETER:-$tf_loadtest_db_password_parameter}"
-
-if [[ "$SKIP_DATA_COPY" != "true" ]]; then
-  trap delete_temp_parameters EXIT
-
-  prod_db_username="$(aws ssm get-parameter \
-    --name "$PROD_DB_USERNAME_PARAMETER" \
-    --query "Parameter.Value" \
-    --output text)"
-
-  prod_db_password="$(aws ssm get-parameter \
-    --name "$PROD_DB_PASSWORD_PARAMETER" \
-    --with-decryption \
-    --query "Parameter.Value" \
-    --output text)"
-
-  loadtest_db_username="$(aws ssm get-parameter \
-    --name "$LOADTEST_DB_USERNAME_PARAMETER" \
-    --query "Parameter.Value" \
-    --output text)"
-
-  loadtest_db_password="$(aws ssm get-parameter \
-    --name "$LOADTEST_DB_PASSWORD_PARAMETER" \
-    --with-decryption \
-    --query "Parameter.Value" \
-    --output text)"
-
-  aws ssm put-parameter \
-    --name "$MIGRATION_PARAMETER_PREFIX/prod-db-username" \
-    --type String \
-    --value "$prod_db_username" \
-    --overwrite >/dev/null
-
-  aws ssm put-parameter \
-    --name "$MIGRATION_PARAMETER_PREFIX/prod-db-password" \
-    --type SecureString \
-    --value "$prod_db_password" \
-    --overwrite >/dev/null
-
-  aws ssm put-parameter \
-    --name "$MIGRATION_PARAMETER_PREFIX/loadtest-db-username" \
-    --type String \
-    --value "$loadtest_db_username" \
-    --overwrite >/dev/null
-
-  aws ssm put-parameter \
-    --name "$MIGRATION_PARAMETER_PREFIX/loadtest-db-password" \
-    --type SecureString \
-    --value "$loadtest_db_password" \
-    --overwrite >/dev/null
-
-  copy_commands_json="$(jq -cn \
-    --arg prefix "$MIGRATION_PARAMETER_PREFIX" \
-    --arg prod_endpoint "$prod_endpoint" \
-    --arg prod_port "$prod_port" \
-    --arg loadtest_endpoint "$loadtest_endpoint" \
-    --arg loadtest_port "$loadtest_port" \
-    --arg database "$DATABASE_NAME" \
-    '{
-      commands: [
-        "set -euo pipefail",
-        "export DEBIAN_FRONTEND=noninteractive",
-        "if ! command -v mysqldump >/dev/null 2>&1 || ! command -v mysql >/dev/null 2>&1; then sudo apt-get update && sudo apt-get install -y mysql-client; fi",
-        "PROD_USER=$(aws ssm get-parameter --name \($prefix)/prod-db-username --query Parameter.Value --output text)",
-        "PROD_PASSWORD=$(aws ssm get-parameter --name \($prefix)/prod-db-password --with-decryption --query Parameter.Value --output text)",
-        "LOAD_USER=$(aws ssm get-parameter --name \($prefix)/loadtest-db-username --query Parameter.Value --output text)",
-        "LOAD_PASSWORD=$(aws ssm get-parameter --name \($prefix)/loadtest-db-password --with-decryption --query Parameter.Value --output text)",
-        "DUMP_FILE=/tmp/solid-connection-loadtest-$(date +%Y%m%d%H%M%S).sql.gz",
-        "trap '\''rm -f \"$DUMP_FILE\"'\'' EXIT",
-        "MYSQL_PWD=\"$PROD_PASSWORD\" mysqldump --single-transaction --set-gtid-purged=OFF --column-statistics=0 -h \($prod_endpoint) -P \($prod_port) -u \"$PROD_USER\" \($database) | gzip > \"$DUMP_FILE\"",
-        "MYSQL_PWD=\"$LOAD_PASSWORD\" mysql -h \($loadtest_endpoint) -P \($loadtest_port) -u \"$LOAD_USER\" -e \"DROP DATABASE IF EXISTS \\\`\($database)\\\`; CREATE DATABASE \\\`\($database)\\\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;\"",
-        "gunzip -c \"$DUMP_FILE\" | MYSQL_PWD=\"$LOAD_PASSWORD\" mysql -h \($loadtest_endpoint) -P \($loadtest_port) -u \"$LOAD_USER\" \($database)",
-        "rm -f \"$DUMP_FILE\""
-      ]
-    }')"
-
-  send_ssm_command "$prod_instance_id" "Copy prod RDS data to load test RDS" "$copy_commands_json"
-fi
 
 if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
   stage_commands_json="$(jq -cn \

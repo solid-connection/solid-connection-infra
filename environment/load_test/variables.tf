@@ -15,8 +15,10 @@ variable "allocated_storage" {
 }
 
 variable "db_engine_version" {
-  description = "MySQL engine version"
+  description = "Deprecated. The load-test RDS is restored from the latest prod snapshot."
   type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "db_parameter_group_name" {
@@ -31,13 +33,17 @@ variable "db_name" {
 }
 
 variable "load_test_db_username_parameter_name" {
-  description = "SSM parameter name containing the load test DB root username"
+  description = "Deprecated. Load-test datasource credentials are copied from prod datasource parameters."
   type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "load_test_db_password_parameter_name" {
-  description = "SSM SecureString parameter name containing the load test DB root password"
+  description = "Deprecated. Load-test datasource credentials are copied from prod datasource parameters."
   type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "prod_db_username_parameter_name" {
@@ -70,7 +76,7 @@ variable "prod_rds_identifier" {
 }
 
 variable "prod_api_instance_name" {
-  description = "Name tag of the prod API EC2 instance used to run dump/restore"
+  description = "Name tag of the prod API EC2 instance whose security group can access load-test RDS"
   type        = string
   default     = "solid-connection-server-prod"
 }
