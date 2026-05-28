@@ -188,8 +188,7 @@ for relative_path in \
   "createPost.json" \
   "updatePost.json" \
   "whole-user-flow.js" \
-  "set_up_xk6.sh" \
-  "script/set-load-test.sh"; do
+  "set_up_xk6.sh"; do
   sync_file "$load_generator_instance_id" "$load_generator_k6_dir" "$relative_path"
 done
 
@@ -205,7 +204,7 @@ run_commands_json="$(jq -cn \
     commands: [
       "set -euo pipefail",
       "cd \($k6_dir)",
-      "chmod +x set_up_xk6.sh script/set-load-test.sh",
+      "chmod +x set_up_xk6.sh",
       "chown -R ubuntu:ubuntu \($k6_dir)",
       "if [ ! -x ./k6 ]; then sudo -u ubuntu -H ./set_up_xk6.sh; fi",
       "sudo -u ubuntu -H env BASE_URL=\($target_base_url | @sh) K6_PROMETHEUS_RW_SERVER_URL=\($prometheus_url | @sh) K6_VUS=\($vus | @sh) K6_ITERATIONS=\($iterations | @sh) K6_MAX_DURATION=\($max_duration | @sh) ./k6 run \($script | @sh)"

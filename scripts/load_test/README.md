@@ -79,7 +79,6 @@ Run workflow 동작:
 - `updatePost.json`
 - `whole-user-flow.js`
 - `set_up_xk6.sh`
-- `script/set-load-test.sh`
 
 ## 결과 확인
 
