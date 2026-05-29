@@ -4,14 +4,16 @@ set -euo pipefail
 
 trap 'echo "xk6 setup failed" >&2' ERR
 
-export GO_VERSION=1.22.2
+export GO_VERSION=1.25.9
+export XK6_VERSION=v1.4.3
+export XK6_PROMETHEUS_REMOTE_VERSION=v0.5.1
 export BASE_DIR=/home/ubuntu/solid-connection-load-test/k6
 export GOROOT=${BASE_DIR}/go
 export GOPATH=${BASE_DIR}/go-workspace
 export PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 export XK6_BIN=${GOPATH}/bin/xk6
-export K6_OUT=xk6-prometheus-rw
-export K6_PROMETHEUS_RW_SERVER_URL=${K6_PROMETHEUS_RW_SERVER_URL:-http://132.145.83.182:9090/api/v1/write}
+export K6_OUT=experimental-prometheus-rw
+export K6_PROMETHEUS_RW_SERVER_URL=${K6_PROMETHEUS_RW_SERVER_URL:-}
 export K6_PROMETHEUS_RW_TREND_STATS="${K6_PROMETHEUS_RW_TREND_STATS:-p(90),p(95),p(99),avg,min,max}"
 
 {
@@ -20,7 +22,7 @@ export K6_PROMETHEUS_RW_TREND_STATS="${K6_PROMETHEUS_RW_TREND_STATS:-p(90),p(95)
   echo "export GOPATH=${GOPATH}"
   echo "export PATH=\$PATH:\$GOROOT/bin:\$GOPATH/bin"
   echo "export XK6_BIN=${GOPATH}/bin/xk6"
-  echo "export K6_OUT=xk6-prometheus-rw"
+  echo "export K6_OUT=experimental-prometheus-rw"
   echo "export K6_PROMETHEUS_RW_SERVER_URL=${K6_PROMETHEUS_RW_SERVER_URL}"
   echo "export K6_PROMETHEUS_RW_TREND_STATS=\"${K6_PROMETHEUS_RW_TREND_STATS}\""
 } >> ~/.bashrc
@@ -39,13 +41,13 @@ rm "go${GO_VERSION}.linux-amd64.tar.gz"
 echo "Go version: $(go version)"
 
 echo "Install xk6"
-go install go.k6.io/xk6/cmd/xk6@latest
+go install "go.k6.io/xk6/cmd/xk6@${XK6_VERSION}"
 
 echo "xk6 installed: ${XK6_BIN}"
 "$XK6_BIN" --help > /dev/null && echo "xk6 executable is available"
 
 echo "Build k6 with Prometheus remote-write output"
-"$XK6_BIN" build --with github.com/grafana/xk6-output-prometheus-remote@latest
+"$XK6_BIN" build --with "github.com/grafana/xk6-output-prometheus-remote@${XK6_PROMETHEUS_REMOTE_VERSION}"
 
 echo "Build complete: $(pwd)/k6"
 ls -lh ./k6

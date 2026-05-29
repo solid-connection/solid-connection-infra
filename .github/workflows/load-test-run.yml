@@ -66,19 +66,25 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Run k6 on load generator
+        env:
+          VUS: ${{ inputs.vus }}
+          ITERATIONS: ${{ inputs.iterations }}
+          MAX_DURATION: ${{ inputs.max_duration }}
+          TARGET_BASE_URL: ${{ inputs.target_base_url }}
+          PROMETHEUS_REMOTE_WRITE_URL: ${{ inputs.prometheus_remote_write_url }}
         run: |
           args=(
-            --vus "${{ inputs.vus }}"
-            --iterations "${{ inputs.iterations }}"
-            --max-duration "${{ inputs.max_duration }}"
+            --vus "$VUS"
+            --iterations "$ITERATIONS"
+            --max-duration "$MAX_DURATION"
           )
 
-          if [ -n "${{ inputs.target_base_url }}" ]; then
-            args+=(--target-base-url "${{ inputs.target_base_url }}")
+          if [ -n "$TARGET_BASE_URL" ]; then
+            args+=(--target-base-url "$TARGET_BASE_URL")
           fi
 
-          if [ -n "${{ inputs.prometheus_remote_write_url }}" ]; then
-            args+=(--prometheus-remote-write-url "${{ inputs.prometheus_remote_write_url }}")
+          if [ -n "$PROMETHEUS_REMOTE_WRITE_URL" ]; then
+            args+=(--prometheus-remote-write-url "$PROMETHEUS_REMOTE_WRITE_URL")
           fi
 
           bash scripts/load_test/run_k6.sh "${args[@]}"

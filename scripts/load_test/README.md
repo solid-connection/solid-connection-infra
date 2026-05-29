@@ -64,6 +64,7 @@ GitHub에서 **Actions > Load Test Run**을 수동 실행합니다.
   - 선택값입니다. 비워두면 Terraform output `load_test_target_base_url`을 사용합니다.
 - `prometheus_remote_write_url`
   - 선택값입니다. 비워두면 Terraform output `k6_prometheus_remote_write_url`을 사용합니다.
+  - Terraform output도 비어 있으면 Prometheus remote-write 전송은 비활성화됩니다.
 
 Run workflow 동작:
 
@@ -84,10 +85,10 @@ Run workflow 동작:
 
 간단한 실행 결과는 **Load Test Run** GitHub Actions 로그에서 확인합니다.
 
-k6 스크립트는 Prometheus remote-write로도 지표를 전송합니다.
+k6 스크립트는 remote-write URL이 설정된 경우 Prometheus remote-write로도 지표를 전송합니다.
 
 - 기본 remote-write URL은 Terraform output `k6_prometheus_remote_write_url`을 사용합니다.
-- workflow 입력값 `prometheus_remote_write_url`로 override할 수 있습니다.
+- Terraform 기본값은 비어 있으므로, 전송이 필요하면 Terraform 변수나 workflow 입력값 `prometheus_remote_write_url`로 URL을 넣습니다.
 - k6 지표에는 요청 수, 실패율, 응답 시간, p90, p95, p99, 평균, 최소, 최대값이 포함됩니다.
 - API 호출에는 `name`, `testid`, `time` tag가 붙어 endpoint와 실행 시점별로 필터링할 수 있습니다.
 

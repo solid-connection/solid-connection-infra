@@ -48,16 +48,6 @@ output "load_test_ssm_parameter_prefix" {
   value       = var.load_test_parameter_prefix
 }
 
-output "load_test_db_username_parameter_name" {
-  description = "SSM parameter name containing the load test DB username"
-  value       = var.load_test_db_username_parameter_name
-}
-
-output "load_test_db_password_parameter_name" {
-  description = "SSM SecureString parameter name containing the load test DB password"
-  value       = var.load_test_db_password_parameter_name
-}
-
 output "prod_db_username_parameter_name" {
   description = "SSM parameter name containing the prod DB username"
   value       = var.prod_db_username_parameter_name

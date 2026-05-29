@@ -207,7 +207,7 @@ run_commands_json="$(jq -cn \
       "chmod +x set_up_xk6.sh",
       "chown -R ubuntu:ubuntu \($k6_dir)",
       "if [ ! -x ./k6 ]; then sudo -u ubuntu -H ./set_up_xk6.sh; fi",
-      "sudo -u ubuntu -H env BASE_URL=\($target_base_url | @sh) K6_PROMETHEUS_RW_SERVER_URL=\($prometheus_url | @sh) K6_VUS=\($vus | @sh) K6_ITERATIONS=\($iterations | @sh) K6_MAX_DURATION=\($max_duration | @sh) ./k6 run \($script | @sh)"
+      "sudo -u ubuntu -H env BASE_URL=\($target_base_url | @sh) K6_PROMETHEUS_RW_SERVER_URL=\($prometheus_url | @sh) K6_PROMETHEUS_RW_TREND_STATS=\"p(90),p(95),p(99),avg,min,max\" K6_VUS=\($vus | @sh) K6_ITERATIONS=\($iterations | @sh) K6_MAX_DURATION=\($max_duration | @sh) ./k6 run \(if $prometheus_url != \"\" then \"-o experimental-prometheus-rw \" else \"\" end)\($script | @sh)"
     ]
   }')"
 

@@ -33,14 +33,14 @@ variable "db_name" {
 }
 
 variable "load_test_db_username_parameter_name" {
-  description = "Deprecated. Load-test datasource credentials are copied from prod datasource parameters."
+  description = "Deprecated compatibility input. Load-test datasource credentials are copied from prod datasource parameters."
   type        = string
   default     = null
   nullable    = true
 }
 
 variable "load_test_db_password_parameter_name" {
-  description = "Deprecated. Load-test datasource credentials are copied from prod datasource parameters."
+  description = "Deprecated compatibility input. Load-test datasource credentials are copied from prod datasource parameters."
   type        = string
   default     = null
   nullable    = true
@@ -124,7 +124,7 @@ variable "load_test_target_base_url" {
 }
 
 variable "k6_prometheus_remote_write_url" {
-  description = "Default Prometheus remote-write URL for k6"
+  description = "Default Prometheus remote-write URL for k6. Empty disables remote-write unless the workflow input overrides it."
   type        = string
-  default     = "http://132.145.83.182:9090/api/v1/write"
+  default     = ""
 }

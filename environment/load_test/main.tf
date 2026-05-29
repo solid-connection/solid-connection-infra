@@ -128,6 +128,12 @@ resource "aws_instance" "load_generator" {
   associate_public_ip_address = true
   iam_instance_profile        = var.load_generator_instance_profile_name
 
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
   root_block_device {
     volume_size = var.load_generator_root_volume_size
     volume_type = "gp3"
