@@ -60,12 +60,12 @@ output "prod_db_password_parameter_name" {
 
 output "load_generator_instance_id" {
   description = "k6 load generator EC2 instance ID"
-  value       = aws_instance.load_generator.id
+  value       = try(aws_instance.load_generator[0].id, "")
 }
 
 output "load_generator_private_ip" {
   description = "k6 load generator private IP"
-  value       = aws_instance.load_generator.private_ip
+  value       = try(aws_instance.load_generator[0].private_ip, "")
 }
 
 output "load_generator_k6_dir" {

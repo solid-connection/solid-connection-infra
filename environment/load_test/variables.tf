@@ -99,6 +99,12 @@ variable "load_generator_instance_type" {
   default     = "c7i.xlarge"
 }
 
+variable "create_load_generator" {
+  description = "Whether to create the k6 load generator EC2 instance"
+  type        = bool
+  default     = true
+}
+
 variable "load_generator_instance_profile_name" {
   description = "Existing IAM instance profile name for the k6 load generator. It must allow SSM RunCommand."
   type        = string

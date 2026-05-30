@@ -104,6 +104,8 @@ resource "aws_security_group_rule" "load_test_db_mysql" {
 }
 
 resource "aws_security_group" "load_generator" {
+  count = var.create_load_generator ? 1 : 0
+
   name        = "sc-load-test-generator-sg"
   description = "Security group for k6 load generator"
   vpc_id      = data.aws_subnet.stage_api.vpc_id
@@ -121,10 +123,12 @@ resource "aws_security_group" "load_generator" {
 }
 
 resource "aws_instance" "load_generator" {
+  count = var.create_load_generator ? 1 : 0
+
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.load_generator_instance_type
   subnet_id                   = data.aws_instance.stage_api.subnet_id
-  vpc_security_group_ids      = [aws_security_group.load_generator.id]
+  vpc_security_group_ids      = [aws_security_group.load_generator[0].id]
   associate_public_ip_address = true
   iam_instance_profile        = var.load_generator_instance_profile_name
 
@@ -135,9 +139,10 @@ resource "aws_instance" "load_generator" {
   }
 
   root_block_device {
-    volume_size = var.load_generator_root_volume_size
-    volume_type = "gp3"
-    encrypted   = true
+    volume_size           = var.load_generator_root_volume_size
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
   }
 
   user_data = <<-EOF

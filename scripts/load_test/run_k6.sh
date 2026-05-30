@@ -2,6 +2,7 @@
 set -euo pipefail
 
 TERRAFORM_DIR="environment/load_test"
+VAR_FILE="../../config/secrets/load_test.tfvars"
 LOCAL_K6_DIR="config/load-test/k6"
 K6_SCRIPT="whole-user-flow.js"
 TARGET_BASE_URL=""
@@ -10,6 +11,8 @@ K6_VUS="10"
 K6_ITERATIONS="10"
 K6_MAX_DURATION="15m"
 SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-3600}"
+DESTROY_RUNNER="true"
+REBUILD_K6="false"
 
 usage() {
   cat <<'EOF'
@@ -17,6 +20,7 @@ Usage: scripts/load_test/run_k6.sh [options]
 
 Options:
   --terraform-dir PATH              Default: environment/load_test
+  --var-file PATH                   Default: ../../config/secrets/load_test.tfvars
   --local-k6-dir PATH               Default: config/load-test/k6
   --script FILE                     Default: whole-user-flow.js
   --target-base-url URL             Default: Terraform output load_test_target_base_url
@@ -25,6 +29,8 @@ Options:
   --iterations VALUE                Default: 10
   --max-duration VALUE              Default: 15m
   --ssm-command-timeout-seconds     Default: 3600
+  --skip-runner-destroy             Keep the k6 load generator after the run
+  --rebuild-k6                      Rebuild the k6 binary before running
   -h, --help
 EOF
 }
@@ -32,6 +38,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --terraform-dir) TERRAFORM_DIR="$2"; shift 2 ;;
+    --var-file) VAR_FILE="$2"; shift 2 ;;
     --local-k6-dir) LOCAL_K6_DIR="$2"; shift 2 ;;
     --script) K6_SCRIPT="$2"; shift 2 ;;
     --target-base-url) TARGET_BASE_URL="$2"; shift 2 ;;
@@ -40,6 +47,8 @@ while [[ $# -gt 0 ]]; do
     --iterations) K6_ITERATIONS="$2"; shift 2 ;;
     --max-duration) K6_MAX_DURATION="$2"; shift 2 ;;
     --ssm-command-timeout-seconds) SSM_COMMAND_TIMEOUT_SECONDS="$2"; shift 2 ;;
+    --skip-runner-destroy) DESTROY_RUNNER="false"; shift ;;
+    --rebuild-k6) REBUILD_K6="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
   esac
@@ -59,6 +68,26 @@ require_command base64
 
 tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
+}
+
+runner_targets=(
+  -target=aws_security_group.load_generator
+  -target=aws_instance.load_generator
+)
+
+destroy_runner() {
+  local exit_code="$?"
+  local cleanup_code=0
+
+  if [[ "$DESTROY_RUNNER" == "true" ]]; then
+    terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE" "${runner_targets[@]}" || cleanup_code="$?"
+  fi
+
+  if [[ "$exit_code" -ne 0 ]]; then
+    exit "$exit_code"
+  fi
+
+  exit "$cleanup_code"
 }
 
 send_ssm_command() {
@@ -173,6 +202,9 @@ sync_file() {
 }
 
 terraform -chdir="$TERRAFORM_DIR" init
+terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE" "${runner_targets[@]}"
+
+trap destroy_runner EXIT
 
 load_generator_instance_id="$(tf_output load_generator_instance_id)"
 load_generator_k6_dir="$(tf_output load_generator_k6_dir)"
@@ -200,12 +232,15 @@ run_commands_json="$(jq -cn \
   --arg vus "$K6_VUS" \
   --arg iterations "$K6_ITERATIONS" \
   --arg max_duration "$K6_MAX_DURATION" \
+  --arg rebuild_k6 "$REBUILD_K6" \
   '{
     commands: [
       "set -euo pipefail",
       "cd \($k6_dir)",
+      "pkill -f '\''(^|/)k6( |$)'\'' || true",
       "chmod +x set_up_xk6.sh",
       "chown -R ubuntu:ubuntu \($k6_dir)",
+      "if [ \($rebuild_k6 | @sh) = '\''true'\'' ]; then rm -f ./k6; fi",
       "if [ ! -x ./k6 ]; then sudo -u ubuntu -H ./set_up_xk6.sh; fi",
       "sudo -u ubuntu -H env BASE_URL=\($target_base_url | @sh) K6_PROMETHEUS_RW_SERVER_URL=\($prometheus_url | @sh) K6_PROMETHEUS_RW_TREND_STATS=\"p(90),p(95),p(99),avg,min,max\" K6_VUS=\($vus | @sh) K6_ITERATIONS=\($iterations | @sh) K6_MAX_DURATION=\($max_duration | @sh) ./k6 run \(if $prometheus_url != \"\" then \"-o experimental-prometheus-rw \" else \"\" end)\($script | @sh)"
     ]

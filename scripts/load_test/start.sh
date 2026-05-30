@@ -124,7 +124,6 @@ stage_instance_id="$(tf_output stage_api_instance_id)"
 stage_public_ip="$(tf_output stage_api_public_ip)"
 loadtest_endpoint="$(tf_output load_test_rds_endpoint)"
 loadtest_port="$(tf_output load_test_rds_port)"
-load_generator_instance_id="$(tf_output load_generator_instance_id)"
 loadtest_db_name="$(tf_output load_test_db_name)"
 
 DATABASE_NAME="${DATABASE_NAME:-$loadtest_db_name}"
@@ -152,6 +151,6 @@ fi
 
 echo "Load test environment is ready."
 echo "RDS endpoint: ${loadtest_endpoint}:${loadtest_port}"
-echo "Load generator instance: ${load_generator_instance_id}"
+echo "Load generator instance: created by Load Test Run"
 echo "Stage instance: ${stage_instance_id}"
 echo "Stage public IP: ${stage_public_ip}"

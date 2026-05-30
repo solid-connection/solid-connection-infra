@@ -48,6 +48,7 @@ jobs:
       - name: Start load test environment
         run: |
           export TF_VAR_load_generator_instance_type="c7i.large"
+          export TF_VAR_create_load_generator="false"
 
           if [ -n "${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}" ]; then
             export TF_VAR_load_generator_instance_profile_name="${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}"

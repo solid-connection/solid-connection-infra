@@ -28,6 +28,16 @@ on:
         required: false
         default: ""
         type: string
+      destroy_runner:
+        description: "Destroy the k6 load generator after this run"
+        required: true
+        default: true
+        type: boolean
+      rebuild_k6:
+        description: "Rebuild the k6 binary before running"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   id-token: write
@@ -85,6 +95,14 @@ jobs:
 
           if [ -n "$PROMETHEUS_REMOTE_WRITE_URL" ]; then
             args+=(--prometheus-remote-write-url "$PROMETHEUS_REMOTE_WRITE_URL")
+          fi
+
+          if [ "${{ inputs.destroy_runner }}" != "true" ]; then
+            args+=(--skip-runner-destroy)
+          fi
+
+          if [ "${{ inputs.rebuild_k6 }}" = "true" ]; then
+            args+=(--rebuild-k6)
           fi
 
           bash scripts/load_test/run_k6.sh "${args[@]}"
