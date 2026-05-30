@@ -57,23 +57,17 @@ async function createThumbnail(record) {
     const response = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }));
     const imageBuffer = await streamToBuffer(response.Body);
 
-    const thumbnailBuffer = await sharp(imageBuffer)
-        .resize(200, 200, {
-            fit: "inside",
-            withoutEnlargement: true,
-        })
-        .jpeg({ quality: 85 })
-        .toBuffer();
+    const thumbnailBuffer = await createThumbnailBuffer(imageBuffer, extension);
 
     const fileName = key.split("/").pop();
     const nameWithoutExt = fileName.slice(0, -extension.length);
-    const thumbnailKey = `${THUMBNAIL_PREFIX}${nameWithoutExt}_thumb.jpg`;
+    const thumbnailKey = `${THUMBNAIL_PREFIX}${nameWithoutExt}_thumb${extension}`;
 
     await s3.send(new PutObjectCommand({
         Bucket: bucket,
         Key: thumbnailKey,
         Body: thumbnailBuffer,
-        ContentType: "image/jpeg",
+        ContentType: getContentType(extension),
         Metadata: {
             "original-key": key,
             "generated-by": "thumbnail-lambda",
@@ -93,6 +87,39 @@ async function createThumbnail(record) {
 function getExtension(key) {
     const dotIndex = key.lastIndexOf(".");
     return dotIndex === -1 ? "" : key.slice(dotIndex).toLowerCase();
+}
+
+async function createThumbnailBuffer(imageBuffer, extension) {
+    const image = sharp(imageBuffer).resize(200, 200, {
+        fit: "inside",
+        withoutEnlargement: true,
+    });
+
+    switch (extension) {
+        case ".jpg":
+        case ".jpeg":
+            return image.jpeg({ quality: 85 }).toBuffer();
+        case ".png":
+            return image.png().toBuffer();
+        case ".webp":
+            return image.webp({ quality: 85 }).toBuffer();
+        default:
+            throw new Error(`Unsupported image extension: ${extension}`);
+    }
+}
+
+function getContentType(extension) {
+    switch (extension) {
+        case ".jpg":
+        case ".jpeg":
+            return "image/jpeg";
+        case ".png":
+            return "image/png";
+        case ".webp":
+            return "image/webp";
+        default:
+            throw new Error(`Unsupported image extension: ${extension}`);
+    }
 }
 
 async function streamToBuffer(stream) {
