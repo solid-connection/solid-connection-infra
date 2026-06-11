@@ -6,6 +6,7 @@ set -e
 DOMAIN="${domain_name}"
 EMAIL="${email}"
 CONF_NAME="${conf_file_name}"
+UPSTREAM_CONF="/etc/nginx/conf.d/upstream.conf"
 
 echo "Start Nginx Setup for $DOMAIN with config file: $CONF_NAME"
 
@@ -30,7 +31,15 @@ certbot certonly --standalone \
 
 echo "Certificate obtained successfully."
 
-# 4. Create Nginx configuration file
+# 4. Create upstream config file (initial active slot: blue on port 8080)
+# Blue-Green 배포 시 이 파일만 교체하고 nginx -s reload 로 트래픽 전환
+cat <<UPSTREAM_EOF > $UPSTREAM_CONF
+upstream app_backend {
+    server 127.0.0.1:8080;
+}
+UPSTREAM_EOF
+
+# 5. Create Nginx configuration file
 cat <<EOF > /etc/nginx/sites-available/$CONF_NAME
 map \$http_upgrade \$connection_upgrade {
     default upgrade;
@@ -63,7 +72,7 @@ server {
     ssl_stapling_verify on;
 
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://app_backend;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -75,14 +84,14 @@ server {
 }
 EOF
 
-# 5. Create symbolic link and remove default configuration
+# 6. Create symbolic link and remove default configuration
 ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
 rm -f /etc/nginx/sites-enabled/default
 
-# 6. Register auto-renewal cron job
+# 7. Register auto-renewal cron job
 echo "0 0,12 * * * root /opt/certbot/bin/python -c 'import random; import time; time.sleep(random.random() * 3600)' && certbot renew -q" | tee -a /etc/crontab > /dev/null
 
-# 7. Nginx restart
+# 8. Nginx restart
 nginx -t
 systemctl restart nginx
 
