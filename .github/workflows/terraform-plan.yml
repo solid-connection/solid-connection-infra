@@ -452,6 +452,7 @@ jobs:
     steps:
       - uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             const marker = '<!-- coderabbit-review-trigger -->';
             const body = `${marker}\n@coderabbitai review`;
