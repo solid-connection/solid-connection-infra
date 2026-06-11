@@ -31,13 +31,16 @@ certbot certonly --standalone \
 
 echo "Certificate obtained successfully."
 
-# 4. Create upstream config file (initial active slot: blue on port 8080)
+# 4. Create upstream config file only on first provisioning (initial active slot: blue on port 8080)
 # Blue-Green 배포 시 이 파일만 교체하고 nginx -s reload 로 트래픽 전환
-cat <<UPSTREAM_EOF > $UPSTREAM_CONF
+# 이미 존재하면 덮어쓰지 않음 — 재프로비저닝 시 현재 active 슬롯 유지
+if [ ! -f "$UPSTREAM_CONF" ]; then
+  cat <<UPSTREAM_EOF > $UPSTREAM_CONF
 upstream app_backend {
     server 127.0.0.1:8080;
 }
 UPSTREAM_EOF
+fi
 
 # 5. Create Nginx configuration file
 cat <<EOF > /etc/nginx/sites-available/$CONF_NAME
