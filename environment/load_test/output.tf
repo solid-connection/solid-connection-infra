@@ -48,16 +48,6 @@ output "load_test_ssm_parameter_prefix" {
   value       = var.load_test_parameter_prefix
 }
 
-output "prod_db_username_parameter_name" {
-  description = "SSM parameter name containing the prod DB username"
-  value       = var.prod_db_username_parameter_name
-}
-
-output "prod_db_password_parameter_name" {
-  description = "SSM SecureString parameter name containing the prod DB password"
-  value       = var.prod_db_password_parameter_name
-}
-
 output "load_generator_instance_id" {
   description = "k6 load generator EC2 instance ID"
   value       = try(aws_instance.load_generator[0].id, "")

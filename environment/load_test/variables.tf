@@ -46,25 +46,13 @@ variable "load_test_db_password_parameter_name" {
   nullable    = true
 }
 
-variable "prod_db_username_parameter_name" {
-  description = "SSM parameter name containing the prod DB username"
-  type        = string
-  default     = "/solid-connection/prod/spring.datasource.username"
-}
-
-variable "prod_db_password_parameter_name" {
-  description = "SSM SecureString parameter name containing the prod DB password"
-  type        = string
-  default     = "/solid-connection/prod/spring.datasource.password"
-}
-
 variable "kms_key_arn" {
   description = "KMS key ARN for RDS storage encryption"
   type        = string
 }
 
 variable "ssm_kms_key_id" {
-  description = "KMS key ID or ARN for SSM SecureString. Null uses the AWS managed aws/ssm key."
+  description = "Deprecated compatibility input. Terraform no longer writes a load-test DB password SecureString."
   type        = string
   default     = null
   nullable    = true
@@ -102,7 +90,7 @@ variable "load_generator_instance_type" {
 variable "create_load_generator" {
   description = "Whether to create the k6 load generator EC2 instance"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "load_generator_instance_profile_name" {

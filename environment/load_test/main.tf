@@ -58,15 +58,6 @@ data "aws_db_snapshot" "latest_prod" {
   snapshot_type          = "automated"
 }
 
-data "aws_ssm_parameter" "prod_db_username" {
-  name = var.prod_db_username_parameter_name
-}
-
-data "aws_ssm_parameter" "prod_db_password" {
-  name            = var.prod_db_password_parameter_name
-  with_decryption = true
-}
-
 locals {
   source_security_group_ids = setunion(
     data.aws_instance.prod_api.vpc_security_group_ids,
@@ -196,20 +187,4 @@ resource "aws_ssm_parameter" "load_test_datasource_url" {
   type      = "String"
   value     = "jdbc:mysql://${aws_db_instance.load_test.address}:${aws_db_instance.load_test.port}/${var.db_name}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
   overwrite = true
-}
-
-resource "aws_ssm_parameter" "load_test_datasource_username" {
-  name      = "${var.load_test_parameter_prefix}/spring.datasource.username"
-  type      = "String"
-  value     = data.aws_ssm_parameter.prod_db_username.value
-  overwrite = true
-}
-
-resource "aws_ssm_parameter" "load_test_datasource_password" {
-  name      = "${var.load_test_parameter_prefix}/spring.datasource.password"
-  type      = "SecureString"
-  value     = data.aws_ssm_parameter.prod_db_password.value
-  key_id    = var.ssm_kms_key_id
-  overwrite = true
-  tier      = "Standard"
 }

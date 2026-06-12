@@ -20,14 +20,14 @@
 
 `environment/load_test`는 `config/secrets/load_test.tfvars`를 사용합니다.
 
-스냅샷 복원 방식에서는 load-test DB root 계정을 별도로 만들지 않습니다. load-test datasource username/password는 prod datasource Parameter Store 값을 복사해 사용합니다.
+스냅샷 복원 방식에서는 load-test DB root 계정을 별도로 만들지 않습니다. Terraform은 datasource URL만 갱신하고 username/password는 읽거나 복사하지 않습니다. load-test datasource username/password는 앱의 Parameter Store 연동이 loadtest 경로에서 직접 읽습니다.
 
 주요 확인값:
 
 - `prod_rds_identifier`: snapshot을 조회할 prod RDS identifier
 - `kms_key_arn`: 복원된 load-test RDS storage encryption에 사용할 KMS key ARN
-- `prod_db_username_parameter_name`: 기본값 `/solid-connection/prod/spring.datasource.username`
-- `prod_db_password_parameter_name`: 기본값 `/solid-connection/prod/spring.datasource.password`
+- `/solid-connection/loadtest/spring.datasource.username`: 앱이 loadtest profile에서 읽는 DB username. snapshot 복원 직후에는 prod DB username과 같은 값이어야 합니다.
+- `/solid-connection/loadtest/spring.datasource.password`: 앱이 loadtest profile에서 읽는 SecureString. snapshot 복원 직후에는 prod DB password와 같은 값이어야 합니다.
 
 그 외 부하 테스트 설정값은 Terraform 기본값, GitHub Actions variable, workflow 입력값으로 처리합니다.
 
@@ -45,11 +45,11 @@ Start workflow 동작:
 1. GitHub Actions가 `environment/load_test`에서 Terraform apply를 실행합니다.
 2. Terraform이 최신 prod RDS 자동 snapshot을 조회합니다.
 3. Terraform이 해당 snapshot에서 load-test RDS를 복원합니다.
-4. Terraform이 load-test datasource 값을 Parameter Store에 기록합니다.
+4. Terraform이 load-test datasource URL을 Parameter Store에 기록합니다.
    - datasource URL은 복원된 load-test RDS endpoint를 사용합니다.
-   - datasource username/password는 prod datasource Parameter Store 값을 사용합니다.
+   - datasource username/password는 Parameter Store에 복사하지 않습니다.
 5. `scripts/load_test/start.sh`가 Terraform output에서 필요한 값을 읽습니다.
-6. `switch_stage_to_loadtest=true`이면 stage 앱을 `dev,loadtest` profile로 재기동합니다.
+6. `switch_stage_to_loadtest=true`이면 stage 앱을 `dev,loadtest` profile로 재기동합니다. username/password는 앱의 Parameter Store 연동이 loadtest 경로에서 읽습니다.
 
 Start workflow는 load-generator EC2를 만들지 않습니다. 부하 생성용 EC2는 비용 누수를 막기 위해 Run workflow에서만 생성합니다.
 
