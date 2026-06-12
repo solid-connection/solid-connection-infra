@@ -21,6 +21,7 @@ data "cloudinit_config" "app_init" {
     content      = file("${path.module}/../common/scripts/docker_setup.sh")
     filename     = "1_docker_install.sh"
   }
+
 }
 
 # API Server (EC2)
@@ -100,9 +101,9 @@ resource "null_resource" "update_side_infra" {
 
   triggers = {
     script_hash = sha256(templatefile("${path.module}/scripts/side_infra_setup.sh.tftpl", {
-      work_dir               = var.work_dir
-      alloy_env_name         = var.alloy_env_name
-      alloy_config_content   = templatefile("${path.module}/../../config/side-infra/config.alloy.tftpl", {
+      work_dir       = var.work_dir
+      alloy_env_name = var.alloy_env_name
+      alloy_config_content = templatefile("${path.module}/../../config/side-infra/config.alloy.tftpl", {
         loki_ip = data.aws_instance.monitoring_server.private_ip
       })
       redis_version          = var.redis_version
@@ -120,9 +121,9 @@ resource "null_resource" "update_side_infra" {
 
   provisioner "file" {
     content = templatefile("${path.module}/scripts/side_infra_setup.sh.tftpl", {
-      work_dir               = var.work_dir
-      alloy_env_name         = var.alloy_env_name
-      alloy_config_content   = templatefile("${path.module}/../../config/side-infra/config.alloy.tftpl", {
+      work_dir       = var.work_dir
+      alloy_env_name = var.alloy_env_name
+      alloy_config_content = templatefile("${path.module}/../../config/side-infra/config.alloy.tftpl", {
         loki_ip = data.aws_instance.monitoring_server.private_ip
       })
       redis_version          = var.redis_version

@@ -1,1 +1,124 @@
-# TODO:: 부하 테스트 인스턴스용 변수 정의
+variable "rds_identifier" {
+  description = "RDS identifier for load test"
+  type        = string
+}
+
+variable "db_instance_class" {
+  description = "RDS instance class for load test"
+  type        = string
+}
+
+variable "allocated_storage" {
+  description = "RDS storage in GiB"
+  type        = number
+  default     = 20
+}
+
+variable "db_engine_version" {
+  description = "Deprecated. The load-test RDS is restored from the latest prod snapshot."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "db_parameter_group_name" {
+  description = "MySQL parameter group name"
+  type        = string
+}
+
+variable "db_name" {
+  description = "Application database name"
+  type        = string
+  default     = "solid_connection"
+}
+
+variable "load_test_db_username_parameter_name" {
+  description = "Deprecated compatibility input. Load-test datasource credentials are copied from prod datasource parameters."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "load_test_db_password_parameter_name" {
+  description = "Deprecated compatibility input. Load-test datasource credentials are copied from prod datasource parameters."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "kms_key_arn" {
+  description = "KMS key ARN for RDS storage encryption"
+  type        = string
+}
+
+variable "ssm_kms_key_id" {
+  description = "Deprecated compatibility input. Terraform no longer writes a load-test DB password SecureString."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "prod_rds_identifier" {
+  description = "Source prod RDS identifier"
+  type        = string
+}
+
+variable "prod_api_instance_name" {
+  description = "Name tag of the prod API EC2 instance whose security group can access load-test RDS"
+  type        = string
+  default     = "solid-connection-server-prod"
+}
+
+variable "stage_api_instance_name" {
+  description = "Name tag of the stage API EC2 instance that will connect to load test RDS"
+  type        = string
+  default     = "solid-connection-server-stage"
+}
+
+variable "load_test_parameter_prefix" {
+  description = "SSM Parameter Store prefix for load test datasource values"
+  type        = string
+  default     = "/solid-connection/loadtest"
+}
+
+variable "load_generator_instance_type" {
+  description = "EC2 instance type for the k6 load generator"
+  type        = string
+  default     = "c7i.xlarge"
+}
+
+variable "create_load_generator" {
+  description = "Whether to create the k6 load generator EC2 instance"
+  type        = bool
+  default     = false
+}
+
+variable "load_generator_instance_profile_name" {
+  description = "Existing IAM instance profile name for the k6 load generator. It must allow SSM RunCommand."
+  type        = string
+  default     = "solid-connection-load-test-generator"
+}
+
+variable "load_generator_root_volume_size" {
+  description = "Root volume size in GiB for the k6 load generator"
+  type        = number
+  default     = 20
+}
+
+variable "load_generator_k6_dir" {
+  description = "Directory where k6 files are placed on the load generator"
+  type        = string
+  default     = "/home/ubuntu/solid-connection-load-test/k6"
+}
+
+variable "load_test_target_base_url" {
+  description = "Default target base URL for k6"
+  type        = string
+  default     = "https://api.stage.solid-connection.com"
+}
+
+variable "k6_prometheus_remote_write_url" {
+  description = "Default Prometheus remote-write URL for k6. Empty disables remote-write unless the workflow input overrides it."
+  type        = string
+  default     = ""
+}

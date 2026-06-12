@@ -1,0 +1,108 @@
+name: Load Test Run
+
+on:
+  workflow_dispatch:
+    inputs:
+      vus:
+        description: "k6 VUs"
+        required: true
+        default: "10"
+        type: string
+      iterations:
+        description: "k6 iterations per VU"
+        required: true
+        default: "10"
+        type: string
+      max_duration:
+        description: "k6 max duration"
+        required: true
+        default: "15m"
+        type: string
+      target_base_url:
+        description: "Target base URL. Empty uses Terraform default."
+        required: false
+        default: ""
+        type: string
+      prometheus_remote_write_url:
+        description: "Prometheus remote-write URL. Empty uses Terraform default."
+        required: false
+        default: ""
+        type: string
+      destroy_runner:
+        description: "Destroy the k6 load generator after this run"
+        required: true
+        default: true
+        type: boolean
+      rebuild_k6:
+        description: "Rebuild the k6 binary before running"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: load-test-environment
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: "1.10.5"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LOAD_TEST_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Install jq
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq
+
+      - name: Run k6 on load generator
+        env:
+          VUS: ${{ inputs.vus }}
+          ITERATIONS: ${{ inputs.iterations }}
+          MAX_DURATION: ${{ inputs.max_duration }}
+          TARGET_BASE_URL: ${{ inputs.target_base_url }}
+          PROMETHEUS_REMOTE_WRITE_URL: ${{ inputs.prometheus_remote_write_url }}
+        run: |
+          args=(
+            --vus "$VUS"
+            --iterations "$ITERATIONS"
+            --max-duration "$MAX_DURATION"
+          )
+
+          if [ -n "$TARGET_BASE_URL" ]; then
+            args+=(--target-base-url "$TARGET_BASE_URL")
+          fi
+
+          if [ -n "$PROMETHEUS_REMOTE_WRITE_URL" ]; then
+            args+=(--prometheus-remote-write-url "$PROMETHEUS_REMOTE_WRITE_URL")
+          fi
+
+          if [ "${{ inputs.destroy_runner }}" != "true" ]; then
+            args+=(--skip-runner-destroy)
+          fi
+
+          if [ "${{ inputs.rebuild_k6 }}" = "true" ]; then
+            args+=(--rebuild-k6)
+          fi
+
+          bash scripts/load_test/run_k6.sh "${args[@]}"

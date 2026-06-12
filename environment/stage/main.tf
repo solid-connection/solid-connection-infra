@@ -6,8 +6,8 @@ data "aws_vpc" "default" {
 module "stage_stack" {
   source = "../../modules/app_stack"
 
-  env_name          = "stage"
-  vpc_id            = data.aws_vpc.default.id
+  env_name = "stage"
+  vpc_id   = data.aws_vpc.default.id
 
   ami_id = var.ami_id
 
@@ -15,13 +15,13 @@ module "stage_stack" {
   ec2_iam_instance_profile = var.ec2_iam_instance_profile
 
   # 키페어 및 접속 허용
-  key_name          = var.key_name
+  key_name = var.key_name
 
   # 인스턴스 스펙
-  instance_type     = var.server_instance_type
+  instance_type = var.server_instance_type
 
   # RDS 미사용 (Docker container로 대체)
-  enable_rds        = false
+  enable_rds = false
 
   # 보안 그룹 규칙
   api_ingress_rules = var.api_ingress_rules
