@@ -2,7 +2,11 @@ language: ko-KR
 
 reviews:
   auto_review:
-    enabled: false
+    enabled: true
+
+  tools:
+    github-checks:
+      timeout_ms: 300000
 
   path_instructions:
     - path: "**/*.tf"
