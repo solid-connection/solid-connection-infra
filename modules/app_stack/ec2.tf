@@ -110,7 +110,7 @@ resource "null_resource" "update_nginx" {
         --output text \
         --query "Command.CommandId")
       ATTEMPTS=0
-      while [ "$ATTEMPTS" -lt 60 ]; do
+      while [ "$ATTEMPTS" -lt 360 ]; do
         STATUS=$(aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
           --instance-id "$INSTANCE_ID" \
@@ -128,7 +128,7 @@ resource "null_resource" "update_nginx" {
         ATTEMPTS=$((ATTEMPTS + 1))
         sleep 10
       done
-      echo "SSM command timed out after 600s" >&2
+      echo "SSM command timed out after 3600s" >&2
       exit 1
     EOT
   }
@@ -163,7 +163,7 @@ resource "null_resource" "update_side_infra" {
         --output text \
         --query "Command.CommandId")
       ATTEMPTS=0
-      while [ "$ATTEMPTS" -lt 60 ]; do
+      while [ "$ATTEMPTS" -lt 360 ]; do
         STATUS=$(aws ssm get-command-invocation \
           --command-id "$COMMAND_ID" \
           --instance-id "$INSTANCE_ID" \
@@ -181,7 +181,7 @@ resource "null_resource" "update_side_infra" {
         ATTEMPTS=$((ATTEMPTS + 1))
         sleep 10
       done
-      echo "SSM command timed out after 600s" >&2
+      echo "SSM command timed out after 3600s" >&2
       exit 1
     EOT
   }
