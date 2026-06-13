@@ -124,12 +124,6 @@ variable "nginx_conf_name" {
   type        = string
 }
 
-# [Remote SSH용 변수]
-variable "ssh_key_path" {
-  description = "Path to the SSH private key file for remote-exec"
-  type        = string
-}
-
 # [Side Infrastructure 관련 변수]
 variable "work_dir" {
   description = "Working directory for the application"

@@ -31,9 +31,6 @@ module "stage_stack" {
   cert_email      = var.cert_email
   nginx_conf_name = var.nginx_conf_name
 
-  # ssh key 경로 전달
-  ssh_key_path = var.ssh_key_path
-
   # Side Infra 관련 변수 전달
   work_dir       = var.work_dir
   alloy_env_name = var.alloy_env_name

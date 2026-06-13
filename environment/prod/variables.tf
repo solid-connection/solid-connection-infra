@@ -99,11 +99,6 @@ variable "nginx_conf_name" {
   type        = string
 }
 
-variable "ssh_key_path" {
-  description = "Path to the SSH private key file for remote-exec"
-  type        = string
-}
-
 variable "work_dir" {
   description = "Working directory for the application"
   type        = string
