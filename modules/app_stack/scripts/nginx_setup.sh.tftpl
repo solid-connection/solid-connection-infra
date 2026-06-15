@@ -93,7 +93,13 @@ server {
     ssl_stapling_verify on;
 
     # 2차 차단: 취약점 탐색용 정적 파일 확장자 요청 차단
-    location ~* \.(php|asp|aspx|jsp|cgi|env|git|sql|bak|backup|config|ini|log|sh|xml|txt|html|htm)$ {
+    # ($|[/?]) 로 확장자 뒤에 /path 또는 ?query 가 붙는 우회 패턴도 차단
+    location ~* \.(php|asp|aspx|jsp|cgi|sql|bak|backup|config|ini|log|sh|xml|txt|html|htm)($|[/?]) {
+        return 444;
+    }
+
+    # .env, .env.production, .git 등 dotfile 변형 차단
+    location ~* (^|/)\.(env|git) {
         return 444;
     }
 
