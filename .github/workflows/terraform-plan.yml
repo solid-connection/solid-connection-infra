@@ -36,25 +36,22 @@ jobs:
             global:
               - 'environment/global/**'
               - 'modules/shared_resources/**'
-              - 'config/secrets/shared_resources.tfvars'
+              - 'config/secrets'
             prod:
               - 'environment/prod/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/prod.tfvars'
-              - 'config/secrets/app_stack.tfvars'
+              - 'config/secrets'
             stage:
               - 'environment/stage/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/stage.tfvars'
-              - 'config/secrets/app_stack.tfvars'
+              - 'config/secrets'
             monitoring:
               - 'environment/monitoring/**'
               - 'modules/monitoring_stack/**'
               - 'modules/common/**'
-              - 'config/secrets/monitoring.tfvars'
-              - 'config/secrets/monitoring_stack.tfvars'
+              - 'config/secrets'
 
   plan-bootstrap:
     needs: detect-changes
