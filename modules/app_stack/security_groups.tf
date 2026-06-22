@@ -28,7 +28,34 @@ resource "aws_security_group" "api_sg" {
   }
 }
 
-# 2. RDS용 보안 그룹 (API Server만 믿음)
+# 2. DB EC2용 보안 그룹 (API Server만 믿음)
+resource "aws_security_group" "db_ec2_sg" {
+  count       = var.enable_db_ec2 ? 1 : 0
+  name        = "sc-${var.env_name}-db-ec2-sg"
+  description = "Security Group for DB EC2"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description     = "MySQL from API server"
+    from_port       = 3306
+    to_port         = 3306
+    protocol        = "tcp"
+    security_groups = [aws_security_group.api_sg.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "solid-connection-${var.env_name}-db-ec2-sg"
+  }
+}
+
+# 3. RDS용 보안 그룹 (API Server만 믿음)
 resource "aws_security_group" "db_sg" {
   count       = var.enable_rds ? 1 : 0
   name        = "sc-${var.env_name}-db-sg"
