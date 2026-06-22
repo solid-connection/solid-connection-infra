@@ -1,0 +1,53 @@
+#!/bin/bash
+set -euo pipefail
+
+DB_ROOT_USER="$(printf '%s' '${db_root_username_b64}' | base64 -d)"
+DB_ROOT_PASS="$(printf '%s' '${db_root_password_b64}' | base64 -d)"
+
+mysql_escape() {
+  local value="$1"
+  value="$${value//\\/\\\\}"
+  value="$${value//\'/\\\'}"
+  printf '%s' "$value"
+}
+
+DB_ROOT_USER_SQL="$(mysql_escape "$DB_ROOT_USER")"
+DB_ROOT_PASS_SQL="$(mysql_escape "$DB_ROOT_PASS")"
+
+command -v docker >/dev/null
+systemctl enable --now docker
+docker image inspect mysql:8.4 >/dev/null
+
+mkdir -p /var/lib/mysql
+chown -R 999:999 /var/lib/mysql
+chmod 750 /var/lib/mysql
+
+mkdir -p /etc/mysql/conf.d
+cat > /etc/mysql/conf.d/tuning.cnf <<'CNFEOF'
+${mysql_config_content}
+CNFEOF
+chmod 644 /etc/mysql/conf.d/tuning.cnf
+
+docker rm -f mysql-server 2>/dev/null || true
+
+docker run -d \
+  --name mysql-server \
+  --restart always \
+  -p 3306:3306 \
+  -v /var/lib/mysql:/var/lib/mysql \
+  -v /etc/mysql/conf.d:/etc/mysql/conf.d \
+  -e MYSQL_ROOT_PASSWORD="$DB_ROOT_PASS" \
+  mysql:8.4
+
+for i in $(seq 1 30); do
+  if docker exec mysql-server mysqladmin ping -uroot -p"$DB_ROOT_PASS" 2>/dev/null; then
+    break
+  fi
+  sleep 2
+done
+
+docker exec -i mysql-server mysql -uroot -p"$DB_ROOT_PASS" <<SQLEOF
+CREATE USER IF NOT EXISTS '$DB_ROOT_USER_SQL'@'%' IDENTIFIED BY '$DB_ROOT_PASS_SQL';
+GRANT ALL PRIVILEGES ON *.* TO '$DB_ROOT_USER_SQL'@'%' WITH GRANT OPTION;
+FLUSH PRIVILEGES;
+SQLEOF
