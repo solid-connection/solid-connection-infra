@@ -30,6 +30,12 @@ variable "db_ami_id" {
   default     = null
 }
 
+variable "db_subnet_id" {
+  description = "DB EC2를 배치할 Private Subnet ID"
+  type        = string
+  default     = null
+}
+
 variable "ec2_iam_instance_profile" {
   description = "EC2에 연결할 IAM Instance Profile 이름"
   type        = string

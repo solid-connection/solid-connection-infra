@@ -28,6 +28,11 @@ variable "db_ec2_ami_id" {
   type        = string
 }
 
+variable "db_ec2_subnet_id" {
+  description = "DB EC2를 배치할 Private Subnet ID"
+  type        = string
+}
+
 variable "api_ingress_rules" {
   description = "List of ingress rules for API Server"
   type = list(object({

@@ -25,6 +25,7 @@ module "prod_stack" {
   enable_db_ec2    = true
   db_instance_type = var.db_ec2_instance_type
   db_ami_id        = var.db_ec2_ami_id
+  db_subnet_id     = var.db_ec2_subnet_id
 
   # 보안 그룹 규칙
   api_ingress_rules = var.api_ingress_rules

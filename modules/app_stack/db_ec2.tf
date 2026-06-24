@@ -19,6 +19,7 @@ resource "aws_instance" "db_server" {
 
   ami           = var.db_ami_id
   instance_type = var.db_instance_type
+  subnet_id     = var.db_subnet_id
 
   vpc_security_group_ids      = [aws_security_group.db_ec2_sg[count.index].id]
   associate_public_ip_address = false
