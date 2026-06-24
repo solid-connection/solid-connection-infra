@@ -35,7 +35,7 @@ resource "aws_instance" "db_server" {
   }
 
   root_block_device {
-    volume_size           = 20
+    volume_size           = 8
     volume_type           = "gp3"
     encrypted             = true
     delete_on_termination = true
