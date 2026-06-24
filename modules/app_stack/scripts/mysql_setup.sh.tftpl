@@ -39,12 +39,20 @@ docker run -d \
   -e MYSQL_ROOT_PASSWORD="$DB_ROOT_PASS" \
   mysql:8.4
 
+MYSQL_READY=false
 for i in $(seq 1 30); do
   if docker exec mysql-server mysqladmin ping -uroot -p"$DB_ROOT_PASS" 2>/dev/null; then
+    MYSQL_READY=true
     break
   fi
   sleep 2
 done
+
+if [ "$MYSQL_READY" != "true" ]; then
+  echo "MySQL container did not become ready within 60 seconds." >&2
+  docker logs --tail 100 mysql-server >&2 || true
+  exit 1
+fi
 
 docker exec -i mysql-server mysql -uroot -p"$DB_ROOT_PASS" <<SQLEOF
 CREATE USER IF NOT EXISTS '$DB_ROOT_USER_SQL'@'%' IDENTIFIED BY '$DB_ROOT_PASS_SQL';
