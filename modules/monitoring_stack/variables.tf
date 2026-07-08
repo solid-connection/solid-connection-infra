@@ -18,6 +18,12 @@ variable "key_name" {
   type        = string
 }
 
+variable "ec2_iam_instance_profile" {
+  description = "SSM RunCommand 실행을 위해 EC2에 연결할 IAM Instance Profile 이름"
+  type        = string
+  default     = null
+}
+
 variable "instance_type" {
   description = "EC2 인스턴스 타입"
   type        = string
@@ -25,7 +31,7 @@ variable "instance_type" {
 
 variable "private_ip" {
   description = "alloy 설정을 위한 private ip 고정"
-  type = string
+  type        = string
 }
 
 variable "monitoring_ingress_rules" {

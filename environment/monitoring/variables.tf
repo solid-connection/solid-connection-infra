@@ -13,6 +13,11 @@ variable "key_name" {
   type        = string
 }
 
+variable "ec2_iam_instance_profile" {
+  description = "EC2 instance profile name for SSM RunCommand"
+  type        = string
+}
+
 variable "monitoring_ingress_rules" {
   description = "Ingress rules for Grafana(3000), Prometheus(9090), Loki(3100)"
   type = list(object({
@@ -26,7 +31,7 @@ variable "monitoring_ingress_rules" {
 
 variable "private_ip" {
   description = "Fixed private ip for alloy config"
-  type = string
+  type        = string
 }
 
 variable "domain_name" {

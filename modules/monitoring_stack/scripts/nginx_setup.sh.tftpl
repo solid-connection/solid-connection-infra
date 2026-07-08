@@ -5,8 +5,9 @@ set -e
 DOMAIN="${domain_name}"
 EMAIL="${email}"
 CONF_NAME="${conf_file_name}"
+CERTBOT_WEBROOT="/var/www/certbot"
 
-echo ">>> [수동 실행] $DOMAIN 에 대한 Nginx 및 SSL 설정을 시작합니다."
+echo ">>> $DOMAIN 에 대한 Nginx 및 SSL 설정을 시작합니다."
 
 # 1. 패키지 설치
 sudo apt-get update
@@ -18,19 +19,52 @@ sudo /opt/certbot/bin/pip install --upgrade pip
 sudo /opt/certbot/bin/pip install certbot certbot-nginx
 sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
 
-# 3. SSL 인증서 발급
-sudo systemctl stop nginx
-sudo certbot certonly --standalone \
-  --non-interactive \
-  --agree-tos \
-  --email "$EMAIL" \
-  -d "$DOMAIN"
+# 3. HTTP-01 challenge를 nginx가 처리할 수 있도록 webroot 설정
+sudo mkdir -p "$CERTBOT_WEBROOT"
 
-# 4. Nginx 설정 파일 작성
 sudo tee /etc/nginx/sites-available/$CONF_NAME > /dev/null <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root $CERTBOT_WEBROOT;
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+EOF
+
+sudo ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx || sudo systemctl restart nginx
+
+# 4. SSL 인증서 발급/갱신
+sudo certbot certonly --webroot \
+  --webroot-path "$CERTBOT_WEBROOT" \
+  --non-interactive \
+  --agree-tos \
+  --keep-until-expiring \
+  --email "$EMAIL" \
+  -d "$DOMAIN"
+
+# 5. Nginx 설정 파일 작성
+sudo tee /etc/nginx/sites-available/$CONF_NAME > /dev/null <<EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root $CERTBOT_WEBROOT;
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
     location / {
         return 301 https://\$host\$request_uri;
     }
@@ -61,17 +95,20 @@ server {
 }
 EOF
 
-# 5. 설정 활성화
+# 6. 설정 활성화
 sudo ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
 sudo rm -f /etc/nginx/sites-enabled/default
 
-# 6. 자동 갱신 크론탭 등록
-if ! crontab -l 2>/dev/null | grep -q "certbot renew"; then
-  (crontab -l 2>/dev/null; echo "0 0,12 * * * /usr/bin/certbot renew --quiet --post-hook 'systemctl reload nginx'") | crontab -
-fi
+# 7. 자동 갱신 크론 등록
+sudo tee /etc/cron.d/certbot-$CONF_NAME > /dev/null <<EOF
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# 7. Nginx 재시작
+0 0,12 * * * root /opt/certbot/bin/python -c 'import random,time; time.sleep(random.random() * 3600)' && /usr/bin/certbot renew --webroot --webroot-path $CERTBOT_WEBROOT --quiet --deploy-hook "/usr/bin/systemctl reload nginx"
+EOF
+
+# 8. Nginx 재시작
 sudo nginx -t
-sudo systemctl restart nginx
+sudo systemctl reload nginx || sudo systemctl restart nginx
 
 echo "Nginx setup complete!"
