@@ -6,12 +6,17 @@ set -e
 DOMAIN="${domain_name}"
 EMAIL="${email}"
 CONF_NAME="${conf_file_name}"
+CRON_NAME=$(printf '%s' "$CONF_NAME" | tr -c 'A-Za-z0-9_-' '-')
 UPSTREAM_CONF="/etc/nginx/conf.d/upstream.conf"
 CERTBOT_WEBROOT="/var/www/certbot"
 CERT_FULLCHAIN="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
 CERT_PRIVKEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 
 echo "Start Nginx Setup for $DOMAIN with config file: $CONF_NAME"
+
+if [ -z "$CRON_NAME" ]; then
+  CRON_NAME="nginx"
+fi
 
 reload_nginx() {
   nginx -t
@@ -151,7 +156,9 @@ upstream app_backend {
 UPSTREAM_EOF
 fi
 
+CERT_EXISTS=false
 if [ -f "$CERT_FULLCHAIN" ] && [ -f "$CERT_PRIVKEY" ]; then
+  CERT_EXISTS=true
   write_full_nginx_conf
 else
   write_http_challenge_conf
@@ -173,14 +180,16 @@ certbot certonly --webroot \
 echo "Certificate obtained successfully."
 
 # 5. Create Nginx configuration file
-write_full_nginx_conf
+if [ "$CERT_EXISTS" != "true" ]; then
+  write_full_nginx_conf
 
-# 6. Create symbolic link and remove default configuration
-ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
-rm -f /etc/nginx/sites-enabled/default
+  # 6. Create symbolic link and remove default configuration
+  ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
+  rm -f /etc/nginx/sites-enabled/default
+fi
 
 # 7. Register auto-renewal cron job
-cat <<EOF > /etc/cron.d/certbot-$CONF_NAME
+cat <<EOF > /etc/cron.d/certbot-$CRON_NAME
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

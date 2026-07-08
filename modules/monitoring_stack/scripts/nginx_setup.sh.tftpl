@@ -5,24 +5,24 @@ set -e
 DOMAIN="${domain_name}"
 EMAIL="${email}"
 CONF_NAME="${conf_file_name}"
+CRON_NAME=$(printf '%s' "$CONF_NAME" | tr -c 'A-Za-z0-9_-' '-')
 CERTBOT_WEBROOT="/var/www/certbot"
+CERT_FULLCHAIN="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+CERT_PRIVKEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
 
 echo ">>> $DOMAIN 에 대한 Nginx 및 SSL 설정을 시작합니다."
 
-# 1. 패키지 설치
-sudo apt-get update
-sudo apt-get install -y nginx python3 python3-venv libaugeas0
+if [ -z "$CRON_NAME" ]; then
+  CRON_NAME="nginx"
+fi
 
-# 2. Certbot 설치 및 링크
-sudo python3 -m venv /opt/certbot/
-sudo /opt/certbot/bin/pip install --upgrade pip
-sudo /opt/certbot/bin/pip install certbot certbot-nginx
-sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
+reload_nginx() {
+  sudo nginx -t
+  sudo systemctl reload nginx || sudo systemctl restart nginx
+}
 
-# 3. HTTP-01 challenge를 nginx가 처리할 수 있도록 webroot 설정
-sudo mkdir -p "$CERTBOT_WEBROOT"
-
-sudo tee /etc/nginx/sites-available/$CONF_NAME > /dev/null <<EOF
+write_http_challenge_conf() {
+  sudo tee /etc/nginx/sites-available/$CONF_NAME > /dev/null <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -38,23 +38,10 @@ server {
     }
 }
 EOF
+}
 
-sudo ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl reload nginx || sudo systemctl restart nginx
-
-# 4. SSL 인증서 발급/갱신
-sudo certbot certonly --webroot \
-  --webroot-path "$CERTBOT_WEBROOT" \
-  --non-interactive \
-  --agree-tos \
-  --keep-until-expiring \
-  --email "$EMAIL" \
-  -d "$DOMAIN"
-
-# 5. Nginx 설정 파일 작성
-sudo tee /etc/nginx/sites-available/$CONF_NAME > /dev/null <<EOF
+write_full_nginx_conf() {
+  sudo tee /etc/nginx/sites-available/$CONF_NAME > /dev/null <<EOF
 server {
     listen 80;
     server_name $DOMAIN;
@@ -94,13 +81,56 @@ server {
     }
 }
 EOF
+}
 
-# 6. 설정 활성화
-sudo ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
-sudo rm -f /etc/nginx/sites-enabled/default
+activate_nginx_conf() {
+  sudo ln -sf /etc/nginx/sites-available/$CONF_NAME /etc/nginx/sites-enabled/$CONF_NAME
+  sudo rm -f /etc/nginx/sites-enabled/default
+}
+
+# 1. 패키지 설치
+sudo apt-get update
+sudo apt-get install -y nginx python3 python3-venv libaugeas0
+
+# 2. Certbot 설치 및 링크
+sudo python3 -m venv /opt/certbot/
+sudo /opt/certbot/bin/pip install --upgrade pip
+sudo /opt/certbot/bin/pip install certbot certbot-nginx
+sudo ln -sf /opt/certbot/bin/certbot /usr/bin/certbot
+
+# 3. HTTP-01 challenge를 nginx가 처리할 수 있도록 webroot 설정
+sudo mkdir -p "$CERTBOT_WEBROOT"
+
+CERT_EXISTS=false
+if [ -f "$CERT_FULLCHAIN" ] && [ -f "$CERT_PRIVKEY" ]; then
+  CERT_EXISTS=true
+  write_full_nginx_conf
+else
+  write_http_challenge_conf
+fi
+
+activate_nginx_conf
+reload_nginx
+
+# 4. SSL 인증서 발급/갱신
+sudo certbot certonly --webroot \
+  --webroot-path "$CERTBOT_WEBROOT" \
+  --non-interactive \
+  --agree-tos \
+  --keep-until-expiring \
+  --email "$EMAIL" \
+  -d "$DOMAIN"
+
+# 5. Nginx 설정 파일 작성
+if [ "$CERT_EXISTS" != "true" ]; then
+  write_full_nginx_conf
+
+  # 6. 설정 활성화
+  activate_nginx_conf
+fi
 
 # 7. 자동 갱신 크론 등록
-sudo tee /etc/cron.d/certbot-$CONF_NAME > /dev/null <<EOF
+sudo tee /etc/cron.d/certbot-$CRON_NAME > /dev/null <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -108,7 +138,6 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 
 # 8. Nginx 재시작
-sudo nginx -t
-sudo systemctl reload nginx || sudo systemctl restart nginx
+reload_nginx
 
 echo "Nginx setup complete!"
