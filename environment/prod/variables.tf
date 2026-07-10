@@ -92,6 +92,7 @@ variable "additional_db_users" {
     database   = string
     privileges = list(string)
   }))
+  sensitive = true
 }
 
 variable "key_name" {

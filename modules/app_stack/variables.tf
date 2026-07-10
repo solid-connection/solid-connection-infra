@@ -9,7 +9,7 @@ variable "instance_type" {
 variable "enable_rds" {
   description = "RDS 사용 여부"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "enable_db_ec2" {
@@ -107,7 +107,8 @@ variable "additional_db_users" {
     database   = string
     privileges = list(string)
   }))
-  default = {}
+  sensitive = true
+  default   = {}
 }
 
 variable "db_engine_version" {
