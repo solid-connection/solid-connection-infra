@@ -24,18 +24,21 @@ resource "aws_db_instance" "default" {
 
 # 6. MySQL 추가 유저 생성
 resource "mysql_user" "users" {
-  for_each = var.enable_rds ? var.additional_db_users : {}
+  for_each = var.enable_rds || var.enable_db_ec2 ? var.additional_db_users : {}
 
   user               = each.key
   host               = "%"
   plaintext_password = each.value.password
 
-  depends_on = [aws_db_instance.default]
+  depends_on = [
+    aws_db_instance.default,
+    aws_instance.db_server,
+  ]
 }
 
 # 7. MySQL 권한 부여
 resource "mysql_grant" "user_grants" {
-  for_each = var.enable_rds ? var.additional_db_users : {}
+  for_each = var.enable_rds || var.enable_db_ec2 ? var.additional_db_users : {}
 
   user       = each.key
   host       = "%"

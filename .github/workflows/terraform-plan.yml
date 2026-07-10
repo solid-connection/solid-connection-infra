@@ -202,7 +202,7 @@ jobs:
           # 이후 모든 스텝의 PATH 맨 앞에 신규 설치 경로 추가
           echo "/usr/local/sessionmanagerplugin/bin" >> $GITHUB_PATH
           /usr/local/sessionmanagerplugin/bin/session-manager-plugin --version
-      - name: Start SSM Tunnel to RDS
+      - name: Start SSM Tunnel to DB EC2
         run: |
           echo "=== session-manager-plugin 진단 ==="
           which session-manager-plugin || echo "NOT IN PATH"
@@ -214,25 +214,26 @@ jobs:
             --query 'Reservations[0].Instances[0].InstanceId' \
             --output text)
 
-          RDS_HOST=$(aws rds describe-db-instances \
-            --query 'DBInstances[?contains(DBInstanceIdentifier, `prod`)].Endpoint.Address | [0]' \
+          DB_EC2_HOST=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=solid-connection-db-mysql-prod" "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
             --output text)
 
           if [ -z "$EC2_ID" ] || [ "$EC2_ID" = "None" ]; then
             echo "::error::prod EC2 인스턴스를 찾을 수 없습니다"
             exit 1
           fi
-          if [ -z "$RDS_HOST" ] || [ "$RDS_HOST" = "None" ]; then
-            echo "::error::prod RDS 엔드포인트를 찾을 수 없습니다"
+          if [ -z "$DB_EC2_HOST" ] || [ "$DB_EC2_HOST" = "None" ]; then
+            echo "::error::prod DB EC2 private IP를 찾을 수 없습니다"
             exit 1
           fi
 
-          echo "Tunneling via $EC2_ID -> $RDS_HOST:3306"
+          echo "Tunneling via $EC2_ID -> $DB_EC2_HOST:3306"
 
           aws ssm start-session \
             --target "$EC2_ID" \
             --document-name AWS-StartPortForwardingSessionToRemoteHost \
-            --parameters "{\"host\":[\"$RDS_HOST\"],\"portNumber\":[\"3306\"],\"localPortNumber\":[\"3306\"]}" &
+            --parameters "{\"host\":[\"$DB_EC2_HOST\"],\"portNumber\":[\"3306\"],\"localPortNumber\":[\"3306\"]}" &
           SSM_PID=$!
           echo "SSM_PID=$SSM_PID" >> $GITHUB_ENV
 
@@ -433,4 +434,3 @@ jobs:
       - name: Plan Status Check
         if: steps.plan.outputs.exitcode == '1'
         run: exit 1
-

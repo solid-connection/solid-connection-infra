@@ -69,11 +69,14 @@ resource "aws_instance" "db_server" {
     Name = "solid-connection-db-mysql-${var.env_name}"
   }
 
-  user_data_replace_on_change = true
+  user_data_replace_on_change = false
 
   lifecycle {
     ignore_changes = [
       key_name,
+      user_data,
+      user_data_base64,
+      user_data_replace_on_change,
     ]
   }
 }
