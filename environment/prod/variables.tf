@@ -33,6 +33,11 @@ variable "db_ec2_subnet_id" {
   type        = string
 }
 
+variable "db_data_volume_size" {
+  description = "DB EC2 MySQL data volume 크기 (GiB)"
+  type        = number
+}
+
 variable "api_ingress_rules" {
   description = "List of ingress rules for API Server"
   type = list(object({

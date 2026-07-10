@@ -36,6 +36,22 @@ variable "db_subnet_id" {
   default     = null
 }
 
+variable "db_data_volume_size" {
+  description = "DB EC2 MySQL data volume 크기 (GiB)"
+  type        = number
+  default     = null
+
+  validation {
+    condition     = !var.enable_db_ec2 || var.db_data_volume_size != null
+    error_message = "enable_db_ec2가 true이면 db_data_volume_size를 지정해야 합니다."
+  }
+
+  validation {
+    condition     = var.db_data_volume_size == null || var.db_data_volume_size >= 1
+    error_message = "db_data_volume_size는 1GiB 이상이어야 합니다."
+  }
+}
+
 variable "ec2_iam_instance_profile" {
   description = "EC2에 연결할 IAM Instance Profile 이름"
   type        = string
