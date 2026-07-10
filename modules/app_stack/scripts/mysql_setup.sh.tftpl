@@ -19,8 +19,7 @@ command -v blkid >/dev/null
 command -v mkfs.ext4 >/dev/null
 command -v mountpoint >/dev/null
 
-systemctl enable --now docker
-docker image inspect mysql:8.4.8 >/dev/null
+systemctl enable docker
 
 DATA_VOLUME_ID="${db_data_volume_id}"
 DATA_VOLUME_SERIAL="$(printf '%s' "$DATA_VOLUME_ID" | tr -d '-')"
@@ -57,6 +56,16 @@ mountpoint -q "$DATA_VOLUME_MOUNT" || {
   echo "Failed to mount data volume $DATA_VOLUME_ID at $DATA_VOLUME_MOUNT." >&2
   exit 1
 }
+
+mkdir -p /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/10-require-mysql-data.conf <<EOF
+[Unit]
+RequiresMountsFor=$DATA_VOLUME_MOUNT
+After=local-fs.target
+EOF
+systemctl daemon-reload
+systemctl restart docker
+docker image inspect mysql:8.4.8 >/dev/null
 
 mkdir -p "$MYSQL_DATA_DIR"
 chown -R 999:999 "$MYSQL_DATA_DIR"
