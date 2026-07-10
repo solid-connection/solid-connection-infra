@@ -47,7 +47,7 @@ variable "db_data_volume_size" {
   }
 
   validation {
-    condition     = var.db_data_volume_size == null || var.db_data_volume_size >= 1
+    condition     = var.db_data_volume_size == null ? true : var.db_data_volume_size >= 1
     error_message = "db_data_volume_size는 1GiB 이상이어야 합니다."
   }
 }
