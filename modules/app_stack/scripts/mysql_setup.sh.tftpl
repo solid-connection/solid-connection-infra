@@ -25,6 +25,8 @@ docker image inspect mysql:8.4.8 >/dev/null
 DATA_VOLUME_ID="${db_data_volume_id}"
 DATA_VOLUME_SERIAL="$(printf '%s' "$DATA_VOLUME_ID" | tr -d '-')"
 DATA_VOLUME_DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$DATA_VOLUME_SERIAL"
+DATA_VOLUME_MOUNT="/mnt/mysql-data"
+MYSQL_DATA_DIR="$DATA_VOLUME_MOUNT/mysql"
 
 for i in $(seq 1 120); do
   if [ -e "$DATA_VOLUME_DEVICE" ]; then
@@ -43,17 +45,22 @@ if ! blkid "$DATA_VOLUME_DEVICE" >/dev/null 2>&1; then
   mkfs.ext4 -F "$DATA_VOLUME_DEVICE"
 fi
 
-mkdir -p /var/lib/mysql
+mkdir -p "$DATA_VOLUME_MOUNT"
 DATA_VOLUME_UUID="$(blkid -s UUID -o value "$DATA_VOLUME_DEVICE")"
 
-awk '$2 != "/var/lib/mysql" { print }' /etc/fstab > /etc/fstab.tmp
-printf 'UUID=%s /var/lib/mysql ext4 defaults,nofail 0 2\n' "$DATA_VOLUME_UUID" >> /etc/fstab.tmp
+awk -v mount="$DATA_VOLUME_MOUNT" '$2 != mount { print }' /etc/fstab > /etc/fstab.tmp
+printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "$DATA_VOLUME_UUID" "$DATA_VOLUME_MOUNT" >> /etc/fstab.tmp
 mv /etc/fstab.tmp /etc/fstab
 
-mountpoint -q /var/lib/mysql || mount /var/lib/mysql
+mountpoint -q "$DATA_VOLUME_MOUNT" || mount "$DATA_VOLUME_MOUNT"
+mountpoint -q "$DATA_VOLUME_MOUNT" || {
+  echo "Failed to mount data volume $DATA_VOLUME_ID at $DATA_VOLUME_MOUNT." >&2
+  exit 1
+}
 
-chown -R 999:999 /var/lib/mysql
-chmod 750 /var/lib/mysql
+mkdir -p "$MYSQL_DATA_DIR"
+chown -R 999:999 "$MYSQL_DATA_DIR"
+chmod 750 "$MYSQL_DATA_DIR"
 
 mkdir -p /etc/mysql/conf.d
 cat > /etc/mysql/conf.d/tuning.cnf <<'CNFEOF'
@@ -67,7 +74,7 @@ docker run -d \
   --name mysql-server \
   --restart always \
   -p 3306:3306 \
-  -v /var/lib/mysql:/var/lib/mysql \
+  -v "$MYSQL_DATA_DIR:/var/lib/mysql" \
   -v /etc/mysql/conf.d:/etc/mysql/conf.d \
   -e MYSQL_ROOT_PASSWORD="$DB_ROOT_PASS" \
   mysql:8.4.8

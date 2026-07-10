@@ -75,9 +75,6 @@ resource "aws_instance" "db_server" {
     ignore_changes = [
       key_name,
     ]
-    replace_triggered_by = [
-      aws_ebs_volume.db_data[count.index],
-    ]
   }
 }
 
