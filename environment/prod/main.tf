@@ -22,10 +22,11 @@ module "prod_stack" {
   db_instance_class = var.db_instance_class
 
   # DB EC2 설정
-  enable_db_ec2    = true
-  db_instance_type = var.db_ec2_instance_type
-  db_ami_id        = var.db_ec2_ami_id
-  db_subnet_id     = var.db_ec2_subnet_id
+  enable_db_ec2       = true
+  db_instance_type    = var.db_ec2_instance_type
+  db_ami_id           = var.db_ec2_ami_id
+  db_subnet_id        = var.db_ec2_subnet_id
+  db_data_volume_size = var.db_data_volume_size
 
   # 보안 그룹 규칙
   api_ingress_rules = var.api_ingress_rules

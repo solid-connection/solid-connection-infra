@@ -1,3 +1,26 @@
+data "aws_subnet" "db_ec2" {
+  count = var.enable_db_ec2 ? 1 : 0
+
+  id = var.db_subnet_id
+}
+
+resource "aws_ebs_volume" "db_data" {
+  count = var.enable_db_ec2 ? 1 : 0
+
+  availability_zone = data.aws_subnet.db_ec2[count.index].availability_zone
+  size              = var.db_data_volume_size
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name = "solid-connection-db-mysql-data-${var.env_name}"
+  }
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
 data "cloudinit_config" "db_init" {
   count         = var.enable_db_ec2 ? 1 : 0
   gzip          = true
@@ -8,6 +31,7 @@ data "cloudinit_config" "db_init" {
     content = templatefile("${path.module}/scripts/mysql_setup.sh.tftpl", {
       db_root_username_b64 = base64encode(var.db_username)
       db_root_password_b64 = base64encode(var.db_password)
+      db_data_volume_id    = aws_ebs_volume.db_data[count.index].id
       mysql_config_content = file("${path.module}/templates/mysql_tuning.cnf")
     })
     filename = "mysql_setup.sh"
@@ -45,14 +69,20 @@ resource "aws_instance" "db_server" {
     Name = "solid-connection-db-mysql-${var.env_name}"
   }
 
-  user_data_replace_on_change = false
+  user_data_replace_on_change = true
 
   lifecycle {
     ignore_changes = [
-      user_data,
-      user_data_base64,
-      user_data_replace_on_change,
       key_name,
     ]
   }
+}
+
+resource "aws_volume_attachment" "db_data" {
+  count = var.enable_db_ec2 ? 1 : 0
+
+  device_name                    = "/dev/sdf"
+  volume_id                      = aws_ebs_volume.db_data[count.index].id
+  instance_id                    = aws_instance.db_server[count.index].id
+  stop_instance_before_detaching = true
 }
