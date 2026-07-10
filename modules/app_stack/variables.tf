@@ -107,7 +107,8 @@ variable "additional_db_users" {
     database   = string
     privileges = list(string)
   }))
-  default = {}
+  sensitive = true
+  default   = {}
 }
 
 variable "db_engine_version" {
