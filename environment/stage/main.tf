@@ -20,9 +20,6 @@ module "stage_stack" {
   # 인스턴스 스펙
   instance_type = var.server_instance_type
 
-  # RDS 미사용 (Docker container로 대체)
-  enable_rds = false
-
   # 보안 그룹 규칙
   api_ingress_rules = var.api_ingress_rules
 

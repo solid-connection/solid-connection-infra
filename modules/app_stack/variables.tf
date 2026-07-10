@@ -9,7 +9,7 @@ variable "instance_type" {
 variable "enable_rds" {
   description = "RDS 사용 여부"
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "enable_db_ec2" {
