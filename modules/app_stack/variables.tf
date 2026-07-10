@@ -12,6 +12,30 @@ variable "enable_rds" {
   default     = true
 }
 
+variable "enable_db_ec2" {
+  description = "DB EC2 사용 여부"
+  type        = bool
+  default     = false
+}
+
+variable "db_instance_type" {
+  description = "DB EC2 인스턴스 타입"
+  type        = string
+  default     = null
+}
+
+variable "db_ami_id" {
+  description = "DB EC2에 사용할 커스텀 AMI ID"
+  type        = string
+  default     = null
+}
+
+variable "db_subnet_id" {
+  description = "DB EC2를 배치할 Private Subnet ID"
+  type        = string
+  default     = null
+}
+
 variable "ec2_iam_instance_profile" {
   description = "EC2에 연결할 IAM Instance Profile 이름"
   type        = string

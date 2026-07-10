@@ -18,6 +18,21 @@ variable "db_instance_class" {
   type        = string
 }
 
+variable "db_ec2_instance_type" {
+  description = "DB EC2 인스턴스 타입"
+  type        = string
+}
+
+variable "db_ec2_ami_id" {
+  description = "DB EC2에 사용할 커스텀 AMI ID"
+  type        = string
+}
+
+variable "db_ec2_subnet_id" {
+  description = "DB EC2를 배치할 Private Subnet ID"
+  type        = string
+}
+
 variable "api_ingress_rules" {
   description = "List of ingress rules for API Server"
   type = list(object({

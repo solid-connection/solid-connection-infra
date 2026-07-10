@@ -1,0 +1,6 @@
+[mysqld]
+max_connections          = 64
+innodb_buffer_pool_size  = 128M
+innodb_redo_log_capacity = 128M
+bind-address             = 0.0.0.0
+skip-name-resolve
