@@ -29,8 +29,9 @@ module "prod_stack" {
   db_data_volume_size = var.db_data_volume_size
 
   # 보안 그룹 규칙
-  api_ingress_rules = var.api_ingress_rules
-  db_ingress_rules  = var.db_ingress_rules
+  api_ingress_rules    = var.api_ingress_rules
+  rds_ingress_rules    = var.rds_ingress_rules
+  db_ec2_ingress_rules = var.db_ec2_ingress_rules
 
   # RDS 식별자 설정
   rds_identifier = var.rds_identifier

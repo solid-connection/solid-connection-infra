@@ -35,12 +35,15 @@ resource "aws_security_group" "db_ec2_sg" {
   description = "Security Group for DB EC2"
   vpc_id      = var.vpc_id
 
-  ingress {
-    description     = "MySQL from API server"
-    from_port       = 3306
-    to_port         = 3306
-    protocol        = "tcp"
-    security_groups = [aws_security_group.api_sg.id]
+  dynamic "ingress" {
+    for_each = var.db_ec2_ingress_rules
+    content {
+      description     = ingress.value.description
+      from_port       = ingress.value.from_port
+      to_port         = ingress.value.to_port
+      protocol        = ingress.value.protocol
+      security_groups = [aws_security_group.api_sg.id]
+    }
   }
 
   egress {
@@ -63,7 +66,7 @@ resource "aws_security_group" "db_sg" {
   vpc_id      = var.vpc_id
 
   dynamic "ingress" {
-    for_each = var.db_ingress_rules
+    for_each = var.rds_ingress_rules
     content {
       description     = ingress.value.description
       from_port       = ingress.value.from_port

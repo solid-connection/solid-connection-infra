@@ -38,6 +38,11 @@ variable "db_data_volume_size" {
   type        = number
 }
 
+variable "mysql_backup_bucket_name" {
+  description = "Prod MySQL dump와 binlog를 보관할 S3 버킷 이름"
+  type        = string
+}
+
 variable "api_ingress_rules" {
   description = "List of ingress rules for API Server"
   type = list(object({
@@ -49,8 +54,18 @@ variable "api_ingress_rules" {
   }))
 }
 
-variable "db_ingress_rules" {
-  description = "List of ingress rules for DB Server"
+variable "rds_ingress_rules" {
+  description = "API Server Security Group에서 RDS로 허용할 ingress 규칙"
+  type = list(object({
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    description = string
+  }))
+}
+
+variable "db_ec2_ingress_rules" {
+  description = "API Server Security Group에서 DB EC2로 허용할 ingress 규칙"
   type = list(object({
     from_port   = number
     to_port     = number

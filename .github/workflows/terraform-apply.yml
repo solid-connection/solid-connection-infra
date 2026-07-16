@@ -199,6 +199,7 @@ jobs:
         run: |
           terraform apply -auto-approve \
             -var-file="../../config/secrets/prod.tfvars" \
+            -var-file="../../config/secrets/prod_db.tfvars" \
             -var-file="../../config/secrets/app_stack.tfvars"
       - name: Stop SSM Tunnel
         if: always()
