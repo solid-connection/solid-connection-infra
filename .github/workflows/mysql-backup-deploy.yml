@@ -23,25 +23,68 @@ concurrency:
 env:
   AWS_REGION: ap-northeast-2
   LOCAL_SSH_PORT: "2222"
+  SESSION_MANAGER_PLUGIN_VERSION: "1.2.835.0"
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install Session Manager plugin
         run: |
-          curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
-            -o "$RUNNER_TEMP/session-manager-plugin.deb"
-          sudo dpkg -i "$RUNNER_TEMP/session-manager-plugin.deb"
+          set -Eeuo pipefail
+          plugin_dir="$(mktemp -d "$RUNNER_TEMP/session-manager-plugin.XXXXXX")"
+          trap 'rm -rf -- "$plugin_dir"' EXIT
+          plugin_base_url="https://s3.amazonaws.com/session-manager-downloads/plugin/${SESSION_MANAGER_PLUGIN_VERSION}/ubuntu_64bit"
+
+          curl -fsSL "$plugin_base_url/session-manager-plugin.deb" \
+            -o "$plugin_dir/session-manager-plugin.deb"
+          curl -fsSL "$plugin_base_url/session-manager-plugin.deb.sig" \
+            -o "$plugin_dir/session-manager-plugin.deb.sig"
+
+          cat >"$plugin_dir/session-manager-plugin.gpg" <<'EOF'
+          -----BEGIN PGP PUBLIC KEY BLOCK-----
+
+          mFIEZ5ERQxMIKoZIzj0DAQcCAwQjuZy+IjFoYg57sLTGhF3aZLBaGpzB+gY6j7Ix
+          P7NqbpXyjVj8a+dy79gSd64OEaMxUb7vw/jug+CfRXwVGRMNtIBBV1MgU1NNIFNl
+          c3Npb24gTWFuYWdlciA8c2Vzc2lvbi1tYW5hZ2VyLXBsdWdpbi1zaWduZXJAYW1h
+          em9uLmNvbT4gKEFXUyBTeXN0ZW1zIE1hbmFnZXIgU2Vzc2lvbiBNYW5hZ2VyIFBs
+          dWdpbiBMaW51eCBTaWduZXIgS2V5KYkBAAQQEwgAqAUCZ5ERQ4EcQVdTIFNTTSBT
+          ZXNzaW9uIE1hbmFnZXIgPHNlc3Npb24tbWFuYWdlci1wbHVnaW4tc2lnbmVyQGFt
+          YXpvbi5jb20+IChBV1MgU3lzdGVtcyBNYW5hZ2VyIFNlc3Npb24gTWFuYWdlciBQ
+          bHVnaW4gTGludXggU2lnbmVyIEtleSkWIQR5WWNxJM4JOtUB1HosTUr/b2dX7gIe
+          AwIbAwIVCAAKCRAsTUr/b2dX7rO1AQCa1kig3lQ78W/QHGU76uHx3XAyv0tfpE9U
+          oQBCIwFLSgEA3PDHt3lZ+s6m9JLGJsy+Cp5ZFzpiF6RgluR/2gA861M=
+          =2DQm
+          -----END PGP PUBLIC KEY BLOCK-----
+          EOF
+
+          export GNUPGHOME="$plugin_dir/gnupg"
+          install -d -m 700 "$GNUPGHOME"
+          gpg --batch --import "$plugin_dir/session-manager-plugin.gpg"
+          signing_key_fingerprint="$(gpg --batch --with-colons --fingerprint 2C4D4AFF6F6757EE | awk -F: '$1 == "fpr" {print $10; exit}')"
+          if [[ "$signing_key_fingerprint" != "7959637124CE093AD501D47A2C4D4AFF6F6757EE" ]]; then
+            echo "::error::Unexpected Session Manager plugin signing key fingerprint"
+            exit 1
+          fi
+          gpg --batch --verify \
+            "$plugin_dir/session-manager-plugin.deb.sig" \
+            "$plugin_dir/session-manager-plugin.deb"
+
+          package_version="$(dpkg-deb --field "$plugin_dir/session-manager-plugin.deb" Version)"
+          if [[ "$package_version" != "${SESSION_MANAGER_PLUGIN_VERSION}-1" ]]; then
+            echo "::error::Unexpected Session Manager plugin package version: $package_version"
+            exit 1
+          fi
+          sudo dpkg -i "$plugin_dir/session-manager-plugin.deb"
           echo "/usr/local/sessionmanagerplugin/bin" >> "$GITHUB_PATH"
 
       - name: Validate or install MySQL backup

@@ -33,6 +33,12 @@ readonly DUMP_FILE="$JOB_DIR/${MYSQL_DATABASE}-${job_id}.sql.gz"
 readonly CHECKSUM_FILE="$DUMP_FILE.sha256"
 readonly MANIFEST_FILE="$JOB_DIR/manifest.json"
 
+# 완료 포인터 제거 후 프로세스가 종료되어 남은 이전 staging은 다음 실행에서 정리합니다.
+for stale_job_dir in "$STAGING_DIR"/dump-*; do
+  if [[ -d "$stale_job_dir" && "$stale_job_dir" != "$JOB_DIR" ]]; then
+    rm -rf -- "$stale_job_dir"
+  fi
+done
 install -d -m 700 "$JOB_DIR"
 
 if [[ ! -s "$DUMP_FILE" ]]; then
@@ -88,7 +94,8 @@ upload_file_once "$CHECKSUM_FILE" "$OBJECT_PREFIX/$(basename "$CHECKSUM_FILE")"
 # manifest를 마지막에 업로드하여 해당 prefix의 백업 완료 표식으로 사용합니다.
 upload_file_once "$MANIFEST_FILE" "$OBJECT_PREFIX/manifest.json"
 
-rm -rf "$JOB_DIR"
+printf '%s\n' "$created_at" >"$STATE_DIR/last-dump-success.tmp"
+mv "$STATE_DIR/last-dump-success.tmp" "$STATE_DIR/last-dump-success"
 rm -f "$CURRENT_JOB_FILE"
-printf '%s\n' "$created_at" >"$STATE_DIR/last-dump-success"
+rm -rf "$JOB_DIR"
 echo "mysqldump backup completed: $OBJECT_PREFIX"

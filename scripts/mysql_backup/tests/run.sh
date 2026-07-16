@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
-readonly TEST_ROOT="$(mktemp -d)"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+readonly PROJECT_DIR
+TEST_ROOT="$(mktemp -d)"
+readonly TEST_ROOT
 trap 'rm -rf "$TEST_ROOT"' EXIT
 
 assert_equals() {
@@ -36,6 +38,57 @@ test_upload_idempotency() {
       exit 1
     fi
   )
+}
+
+test_validate_requires_schema() {
+  local fixture_dir="$TEST_ROOT/validate"
+  local backup_dir="$fixture_dir/backup"
+
+  mkdir -p "$fixture_dir/lib" "$backup_dir"
+  cat >"$fixture_dir/lib/backup-common.sh" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly BACKUP_ROOT="$TEST_BACKUP_ROOT"
+readonly MYSQL_CONTAINER="mysql-server"
+require_backup_environment() { :; }
+require_commands() { :; }
+mountpoint() { :; }
+docker() { :; }
+df() { printf 'Avail\n9999999999\n'; }
+aws() { :; }
+mysql_query() {
+  if [[ "$1" == *'@@log_bin'* ]]; then
+    printf '%s\n' '1 ROW 1 1 1'
+  elif [[ "$1" == *'information_schema.schemata'* ]]; then
+    printf '%s\n' "$TEST_SCHEMA_EXISTS"
+  elif [[ "$1" == *'information_schema.tables'* ]]; then
+    printf '%s\n' '1024'
+  else
+    echo "Unexpected validation query: $1" >&2
+    return 1
+  fi
+}
+EOF
+
+  TEST_BACKUP_ROOT="$backup_dir" \
+  TEST_SCHEMA_EXISTS=1 \
+  MYSQL_BACKUP_BUCKET="test-bucket" \
+  MYSQL_DATABASE="test_database" \
+  AWS_REGION="ap-northeast-2" \
+  MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
+    bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null
+
+  if TEST_BACKUP_ROOT="$backup_dir" \
+    TEST_SCHEMA_EXISTS=0 \
+    MYSQL_BACKUP_BUCKET="test-bucket" \
+    MYSQL_DATABASE="missing_database" \
+    AWS_REGION="ap-northeast-2" \
+    MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
+      bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null 2>&1; then
+    echo "Validation must reject a missing backup database." >&2
+    exit 1
+  fi
 }
 
 write_fake_common() {
@@ -145,6 +198,16 @@ EOF
     bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-binlog"
 
   assert_equals "8" "$(wc -l <"$upload_log" | tr -d ' ')" "four closed binlogs and manifests must be uploaded"
+  uploaded_keys=()
+  while IFS= read -r uploaded_key; do
+    uploaded_keys+=("$uploaded_key")
+  done <"$upload_log"
+  for ((i = 0; i < ${#uploaded_keys[@]}; i += 2)); do
+    assert_equals \
+      "${uploaded_keys[i]}.manifest.json" \
+      "${uploaded_keys[i + 1]}" \
+      "each binlog must be uploaded immediately before its manifest"
+  done
   assert_equals \
     "1 test-bucket 11111111-2222-3333-4444-555555555555 binlog.000004 $rotation_slot binlog.000004 binlog.000005" \
     "$(<"$backup_dir/state/binlog-last-uploaded")" \
@@ -193,6 +256,19 @@ EOF
   MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
     bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-binlog" >/dev/null
   assert_equals "6" "$(wc -l <"$upload_log" | tr -d ' ')" "S3 state recovery must skip older binlogs and upload the remaining closed chain"
+
+  rm -f "$backup_dir/state/binlog-last-uploaded"
+  : >"$upload_log"
+  TEST_BACKUP_ROOT="$backup_dir" \
+  TEST_MYSQL_DATA_DIR="$data_dir" \
+  TEST_UPLOAD_LOG="$upload_log" \
+  TEST_MANIFEST_CAPTURE="$manifest_capture" \
+  TEST_ACTIVE_FILE="$active_file" \
+  TEST_FLUSH_LOG="$flush_log" \
+  TEST_S3_KEYS=$'binlog/2026/07/16/025000-11111111-2222-3333-4444-555555555555-binlog.000001.manifest.json\tbinlog/2026/07/16/025500-11111111-2222-3333-4444-555555555555-binlog.000003.manifest.json' \
+  MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
+    bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-binlog" >/dev/null
+  assert_equals "10" "$(wc -l <"$upload_log" | tr -d ' ')" "S3 recovery must resume before a manifest gap and repair the local closed chain"
 
   # 동일 서버에서 목적지가 바뀌면 이전 버킷의 last_uploaded를 신뢰하지 않습니다.
   printf '%s\n' 'binlog.000006' >"$active_file"
@@ -250,6 +326,7 @@ test_dump_retry_manifest() {
 
   write_fake_common "$fixture_dir"
   mkdir -p "$backup_dir/staging" "$backup_dir/state"
+  mkdir -p "$backup_dir/staging/dump-20260715T030000Z"
   cat >>"$fixture_dir/lib/backup-common.sh" <<'EOF'
 docker() {
   printf '%s\n' "-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='binlog.000003', SOURCE_LOG_POS=157;"
@@ -274,12 +351,14 @@ EOF
     echo "The failed attempt did not reach the manifest upload." >&2
     exit 1
   fi
+  [[ ! -e "$backup_dir/staging/dump-20260715T030000Z" ]]
   assert_equals \
     "20260716T030000Z" \
     "$(<"$backup_dir/state/dump-current")" \
     "a failed dump attempt must retain a valid retry job id"
   [[ ! -e "$backup_dir/state/dump-current.tmp" ]]
   cp "$manifest_capture" "$first_manifest"
+  rm -f "$manifest_capture"
   sleep 1
 
   TEST_BACKUP_ROOT="$backup_dir" \
@@ -297,6 +376,7 @@ EOF
 }
 
 test_upload_idempotency
+test_validate_requires_schema
 test_binlog_chain
 test_dump_retry_manifest
 echo "All MySQL backup tests passed."

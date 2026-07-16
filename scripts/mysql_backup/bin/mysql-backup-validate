@@ -11,9 +11,10 @@ require_commands aws docker flock gzip sha256sum
 mountpoint -q /mnt/mysql-data
 docker inspect "$MYSQL_CONTAINER" >/dev/null
 
-read -r log_bin binlog_format server_id sync_binlog flush_policy <<<"$(mysql_query '
+mysql_settings="$(mysql_query '
 SELECT @@log_bin, @@binlog_format, @@server_id, @@sync_binlog, @@innodb_flush_log_at_trx_commit;
 ')"
+read -r log_bin binlog_format server_id sync_binlog flush_policy <<<"$mysql_settings"
 
 if [[ "$log_bin" != "1" || "$binlog_format" != "ROW" || "$server_id" == "0" ]]; then
   echo "MySQL binlog configuration is not suitable for backup." >&2
@@ -21,6 +22,16 @@ if [[ "$log_bin" != "1" || "$binlog_format" != "ROW" || "$server_id" == "0" ]]; 
 fi
 if [[ "$sync_binlog" != "1" || "$flush_policy" != "1" ]]; then
   echo "MySQL durability configuration is not sync_binlog=1 and innodb_flush_log_at_trx_commit=1." >&2
+  exit 1
+fi
+
+schema_exists="$(mysql_query "
+SELECT COUNT(*)
+FROM information_schema.schemata
+WHERE schema_name = '$MYSQL_DATABASE';
+")"
+if [[ "$schema_exists" != "1" ]]; then
+  echo "MySQL backup database does not exist: $MYSQL_DATABASE" >&2
   exit 1
 fi
 

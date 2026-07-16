@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SOURCE_DIR
 readonly CONFIG_SOURCE="${1:-$SOURCE_DIR/mysql-backup.env}"
 readonly INSTALL_LIB_DIR="/usr/local/lib/solid-connection/mysql-backup"
 readonly INSTALL_BIN_DIR="/usr/local/libexec/solid-connection"
@@ -44,7 +45,8 @@ install -d -m 700 -o root -g root \
   /mnt/mysql-data/mysql-backup/staging \
   /mnt/mysql-data/mysql-backup/state
 
-readonly TRANSACTION_DIR="$(mktemp -d /tmp/mysql-backup-install-transaction.XXXXXX)"
+TRANSACTION_DIR="$(mktemp -d /tmp/mysql-backup-install-transaction.XXXXXX)"
+readonly TRANSACTION_DIR
 readonly CANDIDATE_DIR="$TRANSACTION_DIR/candidate"
 readonly ROLLBACK_DIR="$TRANSACTION_DIR/rollback"
 install -d -m 700 "$CANDIDATE_DIR/lib" "$CANDIDATE_DIR/bin" "$CANDIDATE_DIR/systemd" "$ROLLBACK_DIR"

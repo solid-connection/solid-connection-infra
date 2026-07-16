@@ -99,10 +99,23 @@ if [[ "$state_is_compatible" != "true" ]]; then
     --region "$AWS_REGION" \
     --query "Contents[?contains(Key, '$database_server_uuid') && ends_with(Key, '.manifest.json')].Key" \
     --output text)"
-  last_uploaded="$(printf '%s' "$uploaded_keys" | \
+  last_uploaded=""
+  previous_uploaded=""
+  while IFS= read -r uploaded_binlog; do
+    if [[ -n "$previous_uploaded" ]]; then
+      previous_uploaded_number=$((10#${previous_uploaded##*.}))
+      uploaded_number=$((10#${uploaded_binlog##*.}))
+      if ((uploaded_number != previous_uploaded_number + 1)); then
+        echo "S3 binlog manifest gap detected between $previous_uploaded and $uploaded_binlog; recovering from the last contiguous manifest." >&2
+        break
+      fi
+    fi
+    last_uploaded="$uploaded_binlog"
+    previous_uploaded="$uploaded_binlog"
+  done < <(printf '%s' "$uploaded_keys" | \
     tr '\t' '\n' | \
     sed -n 's/.*-\(binlog\.[0-9]\{6\}\)\.manifest\.json$/\1/p' | \
-    sort | tail -1)"
+    sort -u)
   if [[ -n "$last_uploaded" ]]; then
     echo "Recovered the last uploaded binlog from S3: $last_uploaded"
   fi

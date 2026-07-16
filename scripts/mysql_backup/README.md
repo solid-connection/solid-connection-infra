@@ -9,6 +9,10 @@ DB EC2에서 다음 systemd 작업을 실행합니다.
 
 ## 배포 전 GitHub 설정
 
+Repository Secrets:
+
+- `AWS_ROLE_ARN`: 배포 워크플로우가 AssumeRole할 IAM 역할 ARN
+
 Repository Variables:
 
 - `MYSQL_BACKUP_BUCKET_NAME`: 백업 버킷 이름
