@@ -74,8 +74,19 @@ variable "api_ingress_rules" {
   }))
 }
 
-variable "db_ingress_rules" {
-  description = "List of ingress rules for DB Server"
+variable "rds_ingress_rules" {
+  description = "API Server Security Group에서 RDS로 허용할 ingress 규칙"
+  type = list(object({
+    from_port   = number
+    to_port     = number
+    protocol    = string
+    description = string
+  }))
+  default = []
+}
+
+variable "db_ec2_ingress_rules" {
+  description = "API Server Security Group에서 DB EC2로 허용할 ingress 규칙"
   type = list(object({
     from_port   = number
     to_port     = number

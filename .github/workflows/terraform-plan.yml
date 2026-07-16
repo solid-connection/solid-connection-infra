@@ -267,6 +267,7 @@ jobs:
         run: |
           terraform plan -no-color \
             -var-file="../../config/secrets/prod.tfvars" \
+            -var-file="../../config/secrets/prod_db.tfvars" \
             -var-file="../../config/secrets/app_stack.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
