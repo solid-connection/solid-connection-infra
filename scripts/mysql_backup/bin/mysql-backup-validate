@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-backup}"
+# shellcheck source=../lib/backup-common.sh
+source "$LIB_DIR/backup-common.sh"
+
+require_backup_environment
+require_commands aws docker flock gzip sha256sum
+
+mountpoint -q /mnt/mysql-data
+docker inspect "$MYSQL_CONTAINER" >/dev/null
+
+read -r log_bin binlog_format server_id sync_binlog flush_policy <<<"$(mysql_query '
+SELECT @@log_bin, @@binlog_format, @@server_id, @@sync_binlog, @@innodb_flush_log_at_trx_commit;
+')"
+
+if [[ "$log_bin" != "1" || "$binlog_format" != "ROW" || "$server_id" == "0" ]]; then
+  echo "MySQL binlog configuration is not suitable for backup." >&2
+  exit 1
+fi
+if [[ "$sync_binlog" != "1" || "$flush_policy" != "1" ]]; then
+  echo "MySQL durability configuration is not sync_binlog=1 and innodb_flush_log_at_trx_commit=1." >&2
+  exit 1
+fi
+
+database_bytes="$(mysql_query "
+SELECT COALESCE(SUM(data_length + index_length), 0)
+FROM information_schema.tables
+WHERE table_schema = '$MYSQL_DATABASE';
+")"
+available_bytes="$(df --output=avail -B1 "$BACKUP_ROOT" | tail -1 | tr -d ' ')"
+
+if [[ ! "$database_bytes" =~ ^[0-9]+$ || ! "$available_bytes" =~ ^[0-9]+$ ]]; then
+  echo "Failed to calculate database size or available backup space." >&2
+  exit 1
+fi
+required_bytes=$((database_bytes * 2 + 268435456))
+
+if ((available_bytes < required_bytes)); then
+  echo "Insufficient backup staging space: available=$available_bytes required=$required_bytes" >&2
+  exit 1
+fi
+
+aws s3api head-bucket \
+  --bucket "$MYSQL_BACKUP_BUCKET" \
+  --region "$AWS_REGION" >/dev/null
+
+echo "MySQL backup validation succeeded."
+echo "database_bytes=$database_bytes available_bytes=$available_bytes"

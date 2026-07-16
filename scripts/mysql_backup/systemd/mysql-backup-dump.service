@@ -1,0 +1,23 @@
+[Unit]
+Description=Upload a consistent MySQL dump to S3
+Requires=docker.service mnt-mysql\x2ddata.mount
+After=docker.service mnt-mysql\x2ddata.mount network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/solid-connection/mysql-backup.env
+ExecStart=/usr/local/libexec/solid-connection/mysql-backup-dump
+TimeoutStartSec=2h
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/mnt/mysql-data/mysql-backup
+
+[Install]
+WantedBy=multi-user.target

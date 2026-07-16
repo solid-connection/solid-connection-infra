@@ -1,0 +1,187 @@
+name: MySQL Backup Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: validate는 상태만 확인하고 install은 백업 구성을 설치합니다.
+        required: true
+        default: validate
+        type: choice
+        options:
+          - validate
+          - install
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: prod-mysql-backup-deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-2
+  LOCAL_SSH_PORT: "2222"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install Session Manager plugin
+        run: |
+          curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/ubuntu_64bit/session-manager-plugin.deb" \
+            -o "$RUNNER_TEMP/session-manager-plugin.deb"
+          sudo dpkg -i "$RUNNER_TEMP/session-manager-plugin.deb"
+          echo "/usr/local/sessionmanagerplugin/bin" >> "$GITHUB_PATH"
+
+      - name: Validate or install MySQL backup
+        env:
+          DEPLOY_MODE: ${{ inputs.mode }}
+          MYSQL_BACKUP_BUCKET: ${{ vars.MYSQL_BACKUP_BUCKET_NAME }}
+          MYSQL_DATABASE: ${{ vars.MYSQL_BACKUP_DATABASE_NAME }}
+          DB_HOST_FINGERPRINT: ${{ vars.PROD_DB_SSH_HOST_KEY_ED25519 }}
+        run: |
+          set -Eeuo pipefail
+          umask 077
+
+          : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET_NAME repository variable is required}"
+          : "${MYSQL_DATABASE:?MYSQL_BACKUP_DATABASE_NAME repository variable is required}"
+          : "${DB_HOST_FINGERPRINT:?PROD_DB_SSH_HOST_KEY_ED25519 repository variable is required}"
+          if [[ "$DEPLOY_MODE" != "validate" && "$DEPLOY_MODE" != "install" ]]; then
+            echo "::error::Invalid deployment mode"
+            exit 1
+          fi
+          if [[ ! "$MYSQL_BACKUP_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
+            echo "::error::Invalid S3 bucket name"
+            exit 1
+          fi
+          if [[ ! "$MYSQL_DATABASE" =~ ^[A-Za-z0-9_]+$ ]]; then
+            echo "::error::Invalid database name"
+            exit 1
+          fi
+          if [[ ! "$DB_HOST_FINGERPRINT" =~ ^SHA256:[A-Za-z0-9+/]{43}$ ]]; then
+            echo "::error::Invalid DB EC2 SSH host key fingerprint"
+            exit 1
+          fi
+          KEY_DIR="$(mktemp -d "$RUNNER_TEMP/mysql-backup-eic.XXXXXX")"
+          SSM_PID=""
+          cleanup() {
+            if [[ -n "$SSM_PID" ]]; then
+              kill "$SSM_PID" 2>/dev/null || true
+              wait "$SSM_PID" 2>/dev/null || true
+            fi
+            rm -rf "$KEY_DIR"
+          }
+          trap cleanup EXIT
+
+          ssh-keygen -q -t ed25519 -N '' -f "$KEY_DIR/id_ed25519"
+
+          API_INSTANCE_ID="$(aws ec2 describe-instances \
+            --filters \
+              'Name=tag:Name,Values=solid-connection-server-prod' \
+              'Name=instance-state-name,Values=running' \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)"
+          DB_INSTANCE_ID="$(aws ec2 describe-instances \
+            --filters \
+              'Name=tag:Name,Values=solid-connection-db-mysql-prod' \
+              'Name=instance-state-name,Values=running' \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)"
+
+          if [[ "$API_INSTANCE_ID" == *$'\t'* || -z "$API_INSTANCE_ID" || "$API_INSTANCE_ID" == "None" ]]; then
+            echo "::error::Exactly one running Prod API EC2 instance is required"
+            exit 1
+          fi
+          if [[ "$DB_INSTANCE_ID" == *$'\t'* || -z "$DB_INSTANCE_ID" || "$DB_INSTANCE_ID" == "None" ]]; then
+            echo "::error::Exactly one running Prod DB EC2 instance is required"
+            exit 1
+          fi
+
+          DB_PRIVATE_IP="$(aws ec2 describe-instances \
+            --instance-ids "$DB_INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text)"
+          if [[ -z "$DB_PRIVATE_IP" || "$DB_PRIVATE_IP" == "None" ]]; then
+            echo "::error::Prod DB EC2 private IP was not found"
+            exit 1
+          fi
+
+          aws ssm start-session \
+            --target "$API_INSTANCE_ID" \
+            --document-name AWS-StartPortForwardingSessionToRemoteHost \
+            --parameters "{\"host\":[\"$DB_PRIVATE_IP\"],\"portNumber\":[\"22\"],\"localPortNumber\":[\"$LOCAL_SSH_PORT\"]}" \
+            >"$KEY_DIR/ssm-tunnel.log" 2>&1 &
+          SSM_PID=$!
+
+          for _ in $(seq 1 60); do
+            kill -0 "$SSM_PID" 2>/dev/null || {
+              cat "$KEY_DIR/ssm-tunnel.log" >&2
+              exit 1
+            }
+            nc -z 127.0.0.1 "$LOCAL_SSH_PORT" 2>/dev/null && break
+            sleep 1
+          done
+          nc -z 127.0.0.1 "$LOCAL_SSH_PORT"
+
+          KNOWN_HOSTS_FILE="$KEY_DIR/known_hosts"
+          ssh-keyscan -t ed25519 -p "$LOCAL_SSH_PORT" 127.0.0.1 >"$KNOWN_HOSTS_FILE" 2>/dev/null
+          ACTUAL_FINGERPRINT="$(ssh-keygen -lf "$KNOWN_HOSTS_FILE" -E sha256 | awk '{print $2}')"
+          if [[ "$ACTUAL_FINGERPRINT" != "$DB_HOST_FINGERPRINT" ]]; then
+            echo "::error::DB EC2 SSH host key fingerprint mismatch"
+            exit 1
+          fi
+
+          SSH_OPTIONS=(
+            -p "$LOCAL_SSH_PORT"
+            -i "$KEY_DIR/id_ed25519"
+            -o IdentitiesOnly=yes
+            -o StrictHostKeyChecking=yes
+            -o UserKnownHostsFile="$KNOWN_HOSTS_FILE"
+            -o ConnectTimeout=10
+          )
+
+          if [[ "$DEPLOY_MODE" == "validate" ]]; then
+            aws ec2-instance-connect send-ssh-public-key \
+              --region "$AWS_REGION" \
+              --instance-id "$DB_INSTANCE_ID" \
+              --instance-os-user ubuntu \
+              --ssh-public-key "file://$KEY_DIR/id_ed25519.pub" >/dev/null
+            REMOTE_VALIDATE_COMMAND="env MYSQL_BACKUP_BUCKET=$(printf '%q' "$MYSQL_BACKUP_BUCKET") MYSQL_DATABASE=$(printf '%q' "$MYSQL_DATABASE") AWS_REGION=$(printf '%q' "$AWS_REGION") bash -s"
+            ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 \
+              "sudo bash -c $(printf '%q' "$REMOTE_VALIDATE_COMMAND")" \
+              < scripts/mysql_backup/validate-remote.sh
+            exit 0
+          fi
+
+          CONFIG_FILE="$KEY_DIR/mysql-backup.env"
+          {
+            printf 'MYSQL_BACKUP_BUCKET=%s\n' "$MYSQL_BACKUP_BUCKET"
+            printf 'MYSQL_DATABASE=%s\n' "$MYSQL_DATABASE"
+            printf 'AWS_REGION=%s\n' "$AWS_REGION"
+          } >"$CONFIG_FILE"
+
+          cp -R scripts/mysql_backup "$KEY_DIR/bundle"
+          cp "$CONFIG_FILE" "$KEY_DIR/bundle/mysql-backup.env"
+          tar -C "$KEY_DIR/bundle" -czf "$KEY_DIR/mysql-backup.tar.gz" .
+
+          aws ec2-instance-connect send-ssh-public-key \
+            --region "$AWS_REGION" \
+            --instance-id "$DB_INSTANCE_ID" \
+            --instance-os-user ubuntu \
+            --ssh-public-key "file://$KEY_DIR/id_ed25519.pub" >/dev/null
+
+          REMOTE_INSTALL_COMMAND='set -Eeuo pipefail; install_dir="$(mktemp -d /tmp/mysql-backup-install.XXXXXX)"; trap '\''rm -rf -- "$install_dir"'\'' EXIT; tar -xzf - -C "$install_dir"; "$install_dir/install.sh" "$install_dir/mysql-backup.env"'
+          ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 \
+            "sudo bash -c $(printf '%q' "$REMOTE_INSTALL_COMMAND")" \
+            <"$KEY_DIR/mysql-backup.tar.gz"

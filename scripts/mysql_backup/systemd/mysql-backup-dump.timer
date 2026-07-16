@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the MySQL dump backup daily at 03:00 KST
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Asia/Seoul
+Persistent=true
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=mysql-backup-dump.service
+
+[Install]
+WantedBy=timers.target
