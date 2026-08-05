@@ -27,6 +27,8 @@ env:
 
 jobs:
   deploy:
+    if: github.ref == 'refs/heads/main'
+    environment: prod-db
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -224,7 +226,7 @@ jobs:
             --instance-os-user ubuntu \
             --ssh-public-key "file://$KEY_DIR/id_ed25519.pub" >/dev/null
 
-          REMOTE_INSTALL_COMMAND='set -Eeuo pipefail; install_dir="$(mktemp -d /tmp/mysql-backup-install.XXXXXX)"; trap '\''rm -rf -- "$install_dir"'\'' EXIT; tar -xzf - -C "$install_dir"; "$install_dir/install.sh" "$install_dir/mysql-backup.env"'
+          REMOTE_INSTALL_COMMAND='set -Eeuo pipefail; install_dir="$(mktemp -d /tmp/mysql-backup-install.XXXXXX)"; trap '\''rm -rf -- "$install_dir"'\'' EXIT; tar -xzf - -C "$install_dir"; bash "$install_dir/install.sh" "$install_dir/mysql-backup.env"'
           ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 \
             "sudo bash -c $(printf '%q' "$REMOTE_INSTALL_COMMAND")" \
             <"$KEY_DIR/mysql-backup.tar.gz"

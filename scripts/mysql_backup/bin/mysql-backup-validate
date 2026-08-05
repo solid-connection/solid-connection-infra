@@ -35,27 +35,12 @@ if [[ "$schema_exists" != "1" ]]; then
   exit 1
 fi
 
-database_bytes="$(mysql_query "
-SELECT COALESCE(SUM(data_length + index_length), 0)
-FROM information_schema.tables
-WHERE table_schema = '$MYSQL_DATABASE';
-")"
-available_bytes="$(df --output=avail -B1 "$BACKUP_ROOT" | tail -1 | tr -d ' ')"
-
-if [[ ! "$database_bytes" =~ ^[0-9]+$ || ! "$available_bytes" =~ ^[0-9]+$ ]]; then
-  echo "Failed to calculate database size or available backup space." >&2
-  exit 1
-fi
-required_bytes=$((database_bytes * 2 + 268435456))
-
-if ((available_bytes < required_bytes)); then
-  echo "Insufficient backup staging space: available=$available_bytes required=$required_bytes" >&2
-  exit 1
-fi
+space_status="$(require_dump_staging_space)"
+read -r database_bytes available_bytes required_bytes <<<"$space_status"
 
 aws s3api head-bucket \
   --bucket "$MYSQL_BACKUP_BUCKET" \
   --region "$AWS_REGION" >/dev/null
 
 echo "MySQL backup validation succeeded."
-echo "database_bytes=$database_bytes available_bytes=$available_bytes"
+echo "database_bytes=$database_bytes available_bytes=$available_bytes required_bytes=$required_bytes"

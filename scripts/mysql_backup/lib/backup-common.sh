@@ -6,6 +6,7 @@ readonly STAGING_DIR="$BACKUP_ROOT/staging"
 readonly STATE_DIR="$BACKUP_ROOT/state"
 readonly MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/mnt/mysql-data/mysql}"
 readonly MYSQL_CONTAINER="${MYSQL_CONTAINER:-mysql-server}"
+readonly DUMP_SPACE_RESERVE_BYTES=268435456
 
 require_backup_environment() {
   : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET is required}"
@@ -42,6 +43,32 @@ mysql_query() {
 
 server_uuid() {
   mysql_query 'SELECT @@server_uuid;'
+}
+
+require_dump_staging_space() {
+  local database_bytes
+  local available_bytes
+  local required_bytes
+
+  database_bytes="$(mysql_query "
+SELECT COALESCE(SUM(data_length + index_length), 0)
+FROM information_schema.tables
+WHERE table_schema = '$MYSQL_DATABASE';
+")"
+  available_bytes="$(df --output=avail -B1 "$BACKUP_ROOT" | tail -1 | tr -d ' ')"
+
+  if [[ ! "$database_bytes" =~ ^[0-9]+$ || ! "$available_bytes" =~ ^[0-9]+$ ]]; then
+    echo "Failed to calculate database size or available backup space." >&2
+    return 1
+  fi
+  required_bytes=$((database_bytes * 2 + DUMP_SPACE_RESERVE_BYTES))
+
+  if ((available_bytes < required_bytes)); then
+    echo "Insufficient backup staging space: available=$available_bytes required=$required_bytes" >&2
+    return 1
+  fi
+
+  printf '%s %s %s\n' "$database_bytes" "$available_bytes" "$required_bytes"
 }
 
 sha256_file() {

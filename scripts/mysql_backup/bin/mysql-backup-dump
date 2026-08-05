@@ -8,6 +8,8 @@ source "$LIB_DIR/backup-common.sh"
 require_backup_environment
 require_commands aws docker flock gzip sha256sum
 
+readonly MAX_DUMP_JOB_AGE_SECONDS=21600
+
 exec 9>"$STATE_DIR/dump.lock"
 if ! flock -n 9; then
   echo "Another mysqldump backup is already running." >&2
@@ -17,15 +19,33 @@ fi
 readonly CURRENT_JOB_FILE="$STATE_DIR/dump-current"
 if [[ -s "$CURRENT_JOB_FILE" ]]; then
   job_id="$(<"$CURRENT_JOB_FILE")"
-else
+  if [[ ! "$job_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+    echo "Invalid persisted dump job id." >&2
+    exit 1
+  fi
+
+  job_created_at="${job_id:0:4}-${job_id:4:2}-${job_id:6:2} ${job_id:9:2}:${job_id:11:2}:${job_id:13:2} UTC"
+  if ! job_created_epoch="$(date -u -d "$job_created_at" +%s)"; then
+    echo "Failed to parse persisted dump job time: $job_id" >&2
+    exit 1
+  fi
+  current_epoch="$(date -u +%s)"
+  job_age_seconds=$((current_epoch - job_created_epoch))
+  if ((job_age_seconds < 0)); then
+    echo "Persisted dump job time is in the future: $job_id" >&2
+    exit 1
+  fi
+  if ((job_age_seconds > MAX_DUMP_JOB_AGE_SECONDS)); then
+    echo "Discarding a stale dump job: job_id=$job_id age_seconds=$job_age_seconds" >&2
+    rm -f "$CURRENT_JOB_FILE"
+    job_id=""
+  fi
+fi
+
+if [[ -z "${job_id:-}" ]]; then
   job_id="$(date -u +%Y%m%dT%H%M%SZ)"
   printf '%s\n' "$job_id" >"$CURRENT_JOB_FILE.tmp"
   mv "$CURRENT_JOB_FILE.tmp" "$CURRENT_JOB_FILE"
-fi
-
-if [[ ! "$job_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
-  echo "Invalid persisted dump job id." >&2
-  exit 1
 fi
 
 readonly JOB_DIR="$STAGING_DIR/dump-$job_id"
@@ -44,6 +64,9 @@ install -d -m 700 "$JOB_DIR"
 if [[ ! -s "$DUMP_FILE" ]]; then
   partial_dump="$DUMP_FILE.partial"
   rm -f "$partial_dump"
+  space_status="$(require_dump_staging_space)"
+  read -r database_bytes available_bytes required_bytes <<<"$space_status"
+  echo "MySQL dump staging space is sufficient: database_bytes=$database_bytes available_bytes=$available_bytes required_bytes=$required_bytes"
 
   docker exec "$MYSQL_CONTAINER" sh -lc \
     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --quick --source-data=2 --routines --events --triggers --hex-blob --set-gtid-purged=OFF --no-tablespaces "$1"' \

@@ -40,6 +40,32 @@ test_upload_idempotency() {
   )
 }
 
+test_dump_space_calculation() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    export MYSQL_BACKUP_ROOT="$TEST_ROOT/space-check"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    mysql_query() { printf '%s\n' '1024'; }
+    df() { printf 'Avail\n%s\n' "$TEST_AVAILABLE_BYTES"; }
+
+    TEST_AVAILABLE_BYTES=268437504
+    assert_equals \
+      "1024 268437504 268437504" \
+      "$(require_dump_staging_space)" \
+      "the staging-space calculation must include twice the database size and the reserve"
+
+    TEST_AVAILABLE_BYTES=268437503
+    if require_dump_staging_space >/dev/null 2>&1; then
+      echo "Insufficient dump staging space must fail validation." >&2
+      exit 1
+    fi
+  )
+}
+
 test_validate_requires_schema() {
   local fixture_dir="$TEST_ROOT/validate"
   local backup_dir="$fixture_dir/backup"
@@ -55,8 +81,8 @@ require_backup_environment() { :; }
 require_commands() { :; }
 mountpoint() { :; }
 docker() { :; }
-df() { printf 'Avail\n9999999999\n'; }
 aws() { :; }
+require_dump_staging_space() { printf '%s\n' '1024 9999999999 268437504'; }
 mysql_query() {
   if [[ "$1" == *'@@log_bin'* ]]; then
     printf '%s\n' '1 ROW 1 1 1'
@@ -111,13 +137,29 @@ require_backup_environment() { :; }
 require_commands() { :; }
 flock() { return 0; }
 aws() { printf '%s' "${TEST_S3_KEYS:-}"; }
+require_dump_staging_space() {
+  if [[ -n "${TEST_SPACE_CHECK_LOG:-}" ]]; then
+    printf '%s\n' 'checked' >>"$TEST_SPACE_CHECK_LOG"
+  fi
+  if [[ "${TEST_DUMP_SPACE_AVAILABLE:-true}" != "true" ]]; then
+    echo "Insufficient backup staging space." >&2
+    return 1
+  fi
+  printf '%s\n' '1024 9999999999 268437504'
+}
 date() {
   case "${*: -1}" in
     +%Y%m%dT%H%M%SZ) printf '%s\n' '20260716T030000Z' ;;
     +%Y-%m-%dT%H:%M:%SZ) printf '%s\n' '2026-07-16T03:00:00Z' ;;
     +%Y/%m/%d) printf '%s\n' '2026/07/16' ;;
     +%H%M%S) printf '%s\n' '030000' ;;
-    +%s) printf '%s\n' '1784170800' ;;
+    +%s)
+      if [[ " $* " == *" -d "* ]]; then
+        printf '%s\n' "${TEST_JOB_CREATED_EPOCH:-1784170800}"
+      else
+        printf '%s\n' "${TEST_NOW_EPOCH:-1784170800}"
+      fi
+      ;;
     *) command date "$@" ;;
   esac
 }
@@ -323,6 +365,7 @@ test_dump_retry_manifest() {
   local manifest_capture="$fixture_dir/manifest.json"
   local first_manifest="$fixture_dir/first-manifest.json"
   local first_attempt_log="$fixture_dir/first-attempt.log"
+  local space_check_log="$fixture_dir/space-checks"
 
   write_fake_common "$fixture_dir"
   mkdir -p "$backup_dir/staging" "$backup_dir/state"
@@ -341,6 +384,7 @@ EOF
     MYSQL_DATABASE="test_database" \
     TEST_FAIL_MANIFEST_ONCE=1 \
     TEST_FAIL_MARKER="$fixture_dir/failed-once" \
+    TEST_SPACE_CHECK_LOG="$space_check_log" \
     MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
       bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-dump" >"$first_attempt_log" 2>&1; then
     echo "The first dump attempt must simulate a manifest upload failure." >&2
@@ -368,15 +412,99 @@ EOF
   MYSQL_DATABASE="test_database" \
   TEST_FAIL_MANIFEST_ONCE=1 \
   TEST_FAIL_MARKER="$fixture_dir/failed-once" \
+  TEST_SPACE_CHECK_LOG="$space_check_log" \
   MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
     bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-dump" >/dev/null
 
   cmp "$first_manifest" "$manifest_capture"
+  assert_equals \
+    "1" \
+    "$(wc -l <"$space_check_log" | tr -d ' ')" \
+    "an upload-only retry must not reserve space for another dump"
   [[ ! -e "$backup_dir/state/dump-current" ]]
 }
 
+test_dump_rejects_insufficient_space() {
+  local fixture_dir="$TEST_ROOT/dump-no-space"
+  local backup_dir="$fixture_dir/backup"
+  local docker_log="$fixture_dir/docker-calls"
+  local space_check_log="$fixture_dir/space-checks"
+
+  write_fake_common "$fixture_dir"
+  mkdir -p "$backup_dir/staging" "$backup_dir/state"
+  cat >>"$fixture_dir/lib/backup-common.sh" <<'EOF'
+docker() {
+  printf '%s\n' 'called' >>"$TEST_DOCKER_LOG"
+  printf '%s\n' "-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='binlog.000003', SOURCE_LOG_POS=157;"
+}
+EOF
+
+  if TEST_BACKUP_ROOT="$backup_dir" \
+    TEST_MYSQL_DATA_DIR="$fixture_dir/mysql" \
+    TEST_DOCKER_LOG="$docker_log" \
+    TEST_SPACE_CHECK_LOG="$space_check_log" \
+    TEST_DUMP_SPACE_AVAILABLE=false \
+    MYSQL_DATABASE="test_database" \
+    MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
+      bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-dump" >/dev/null 2>&1; then
+    echo "A dump must not start without sufficient staging space." >&2
+    exit 1
+  fi
+
+  assert_equals "1" "$(wc -l <"$space_check_log" | tr -d ' ')" "the dump must check free space"
+  [[ ! -e "$docker_log" ]]
+  assert_equals \
+    "20260716T030000Z" \
+    "$(<"$backup_dir/state/dump-current")" \
+    "a failed space check must retain the retry job"
+}
+
+test_dump_discards_stale_job() {
+  local fixture_dir="$TEST_ROOT/dump-stale"
+  local backup_dir="$fixture_dir/backup"
+  local upload_log="$fixture_dir/uploads"
+  local manifest_capture="$fixture_dir/manifest.json"
+  local docker_log="$fixture_dir/docker-calls"
+  local old_job_id="20260715T030000Z"
+  local new_job_id="20260716T030000Z"
+
+  write_fake_common "$fixture_dir"
+  mkdir -p "$backup_dir/staging/dump-$old_job_id" "$backup_dir/state"
+  printf '%s\n' "$old_job_id" >"$backup_dir/state/dump-current"
+  printf '%s\n' 'old dump' >"$backup_dir/staging/dump-$old_job_id/test_database-$old_job_id.sql.gz"
+  cat >>"$fixture_dir/lib/backup-common.sh" <<'EOF'
+docker() {
+  printf '%s\n' 'called' >>"$TEST_DOCKER_LOG"
+  printf '%s\n' "-- CHANGE REPLICATION SOURCE TO SOURCE_LOG_FILE='binlog.000003', SOURCE_LOG_POS=157;"
+  printf '%s\n' 'CREATE TABLE example (id bigint);'
+}
+EOF
+
+  TEST_BACKUP_ROOT="$backup_dir" \
+  TEST_MYSQL_DATA_DIR="$fixture_dir/mysql" \
+  TEST_UPLOAD_LOG="$upload_log" \
+  TEST_MANIFEST_CAPTURE="$manifest_capture" \
+  TEST_DOCKER_LOG="$docker_log" \
+  TEST_JOB_CREATED_EPOCH=1784140000 \
+  TEST_NOW_EPOCH=1784170800 \
+  MYSQL_DATABASE="test_database" \
+  MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
+    bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-dump" >/dev/null
+
+  [[ ! -e "$backup_dir/staging/dump-$old_job_id" ]]
+  [[ ! -e "$backup_dir/state/dump-current" ]]
+  assert_equals "1" "$(wc -l <"$docker_log" | tr -d ' ')" "a stale job must create a new dump"
+  if ! head -1 "$upload_log" | grep -q "dump/2026/07/16/$new_job_id/"; then
+    echo "A stale job must upload under a new dump prefix." >&2
+    exit 1
+  fi
+}
+
 test_upload_idempotency
+test_dump_space_calculation
 test_validate_requires_schema
 test_binlog_chain
 test_dump_retry_manifest
+test_dump_rejects_insufficient_space
+test_dump_discards_stale_job
 echo "All MySQL backup tests passed."
