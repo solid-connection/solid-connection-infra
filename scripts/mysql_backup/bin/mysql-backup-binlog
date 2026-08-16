@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-backup}"
+# shellcheck source=../lib/backup-common.sh
+source "$LIB_DIR/backup-common.sh"
+
+require_backup_environment
+require_commands aws docker flock sha256sum
+
+exec 9>"$STATE_DIR/binlog.lock"
+if ! flock -n 9; then
+  echo "Another binlog backup is already running." >&2
+  exit 0
+fi
+
+readonly BINLOG_STATE_FILE="$STATE_DIR/binlog-last-uploaded"
+readonly BINLOG_STATE_VERSION="1"
+
+state_bucket=""
+state_uuid=""
+last_uploaded=""
+rotation_slot="-1"
+rotation_from="-"
+rotation_to="-"
+
+write_binlog_state() {
+  local persisted_last_uploaded="${last_uploaded:--}"
+
+  printf '%s %s %s %s %s %s %s\n' \
+    "$BINLOG_STATE_VERSION" \
+    "$MYSQL_BACKUP_BUCKET" \
+    "$database_server_uuid" \
+    "$persisted_last_uploaded" \
+    "$rotation_slot" \
+    "$rotation_from" \
+    "$rotation_to" >"$BINLOG_STATE_FILE.tmp"
+  mv "$BINLOG_STATE_FILE.tmp" "$BINLOG_STATE_FILE"
+}
+
+read_active_binlog() {
+  mysql_query 'SHOW BINARY LOG STATUS;' | awk 'NR == 1 {print $1}'
+}
+
+validate_binlog_name() {
+  [[ "$1" =~ ^binlog\.[0-9]{6}$ ]]
+}
+
+database_server_uuid="$(server_uuid)"
+active_binlog="$(read_active_binlog)"
+binlog_basename="$(mysql_query 'SELECT @@log_bin_basename;')"
+host_binlog_index="$MYSQL_DATA_DIR/$(basename "$binlog_basename").index"
+
+if ! validate_binlog_name "$active_binlog" || \
+  [[ ! "$database_server_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "Unexpected MySQL binary log metadata." >&2
+  exit 1
+fi
+if [[ ! -r "$host_binlog_index" ]]; then
+  echo "MySQL binary log index is not readable: $host_binlog_index" >&2
+  exit 1
+fi
+
+state_is_compatible=false
+if [[ -s "$BINLOG_STATE_FILE" ]]; then
+  state_version=""
+  persisted_last_uploaded=""
+  read -r \
+    state_version \
+    state_bucket \
+    state_uuid \
+    persisted_last_uploaded \
+    rotation_slot \
+    rotation_from \
+    rotation_to <"$BINLOG_STATE_FILE" || true
+
+  if [[ "$persisted_last_uploaded" == "-" ]]; then
+    last_uploaded=""
+  else
+    last_uploaded="$persisted_last_uploaded"
+  fi
+
+  if [[ "$state_version" == "$BINLOG_STATE_VERSION" && \
+    "$state_bucket" == "$MYSQL_BACKUP_BUCKET" && \
+    "$state_uuid" == "$database_server_uuid" && \
+    "$rotation_slot" =~ ^-?[0-9]+$ && \
+    ( -z "$last_uploaded" || "$last_uploaded" =~ ^binlog\.[0-9]{6}$ ) && \
+    ( "$rotation_from" == "-" || "$rotation_from" =~ ^binlog\.[0-9]{6}$ ) && \
+    ( "$rotation_to" == "-" || "$rotation_to" =~ ^binlog\.[0-9]{6}$ ) ]]; then
+    state_is_compatible=true
+  fi
+fi
+
+if [[ "$state_is_compatible" != "true" ]]; then
+  # 상태 형식이나 목적지가 달라지면 현재 S3 버킷을 기준으로 체인을 다시 구성합니다.
+  uploaded_keys="$(aws s3api list-objects-v2 \
+    --bucket "$MYSQL_BACKUP_BUCKET" \
+    --prefix 'binlog/' \
+    --region "$AWS_REGION" \
+    --query "Contents[?contains(Key, '$database_server_uuid') && ends_with(Key, '.manifest.json')].Key" \
+    --output text)"
+  last_uploaded=""
+  previous_uploaded=""
+  while IFS= read -r uploaded_binlog; do
+    if [[ -n "$previous_uploaded" ]]; then
+      previous_uploaded_number=$((10#${previous_uploaded##*.}))
+      uploaded_number=$((10#${uploaded_binlog##*.}))
+      if ((uploaded_number != previous_uploaded_number + 1)); then
+        echo "S3 binlog manifest gap detected between $previous_uploaded and $uploaded_binlog; recovering from the last contiguous manifest." >&2
+        break
+      fi
+    fi
+    last_uploaded="$uploaded_binlog"
+    previous_uploaded="$uploaded_binlog"
+  done < <(printf '%s' "$uploaded_keys" | \
+    tr '\t' '\n' | \
+    sed -n 's/.*-\(binlog\.[0-9]\{6\}\)\.manifest\.json$/\1/p' | \
+    sort -u)
+  if [[ -n "$last_uploaded" ]]; then
+    echo "Recovered the last uploaded binlog from S3: $last_uploaded"
+  fi
+  state_bucket="$MYSQL_BACKUP_BUCKET"
+  state_uuid="$database_server_uuid"
+  rotation_slot="-1"
+  rotation_from="-"
+  rotation_to="-"
+  write_binlog_state
+fi
+
+if [[ -n "$last_uploaded" ]]; then
+  active_number=$((10#${active_binlog##*.}))
+  last_uploaded_number=$((10#${last_uploaded##*.}))
+  if ((active_number <= last_uploaded_number)); then
+    echo "Binary log numbering moved backwards. Clear the state only after starting a new verified backup chain." >&2
+    exit 1
+  fi
+fi
+
+current_rotation_slot=$(( $(date -u +%s) / 300 ))
+if [[ "$rotation_slot" != "$current_rotation_slot" ]]; then
+  # 회전 의도를 먼저 기록하여 FLUSH 성공 직후 프로세스가 종료되어도 재시도에서 중복 회전하지 않습니다.
+  rotation_slot="$current_rotation_slot"
+  rotation_from="$active_binlog"
+  rotation_to="-"
+  write_binlog_state
+fi
+
+if [[ "$rotation_to" == "-" ]]; then
+  observed_active_binlog="$(read_active_binlog)"
+  if [[ "$observed_active_binlog" == "$rotation_from" ]]; then
+    mysql_query 'FLUSH BINARY LOGS;'
+    observed_active_binlog="$(read_active_binlog)"
+  fi
+  if ! validate_binlog_name "$observed_active_binlog" || [[ "$observed_active_binlog" == "$rotation_from" ]]; then
+    echo "MySQL binary log rotation did not advance from $rotation_from." >&2
+    exit 1
+  fi
+  rotation_to="$observed_active_binlog"
+  write_binlog_state
+fi
+
+# 동일한 5분 구간의 재시도는 다시 FLUSH하지 않고 현재 active log를 기준으로 미업로드 파일만 처리합니다.
+active_binlog="$(read_active_binlog)"
+if ! validate_binlog_name "$active_binlog"; then
+  echo "Unexpected active binary log after rotation." >&2
+  exit 1
+fi
+
+previous_binlog="$last_uploaded"
+uploaded_count=0
+active_found=false
+
+while IFS= read -r indexed_path; do
+  binlog_name="$(basename "$indexed_path")"
+  if [[ "$binlog_name" == "$active_binlog" ]]; then
+    active_found=true
+    break
+  fi
+  if ! validate_binlog_name "$binlog_name"; then
+    echo "Unexpected binary log file name: $binlog_name" >&2
+    exit 1
+  fi
+  if [[ -n "$last_uploaded" && ("$binlog_name" < "$last_uploaded" || "$binlog_name" == "$last_uploaded") ]]; then
+    continue
+  fi
+
+  if [[ -n "$previous_binlog" ]]; then
+    previous_number=$((10#${previous_binlog##*.}))
+    current_number=$((10#${binlog_name##*.}))
+    if ((current_number != previous_number + 1)); then
+      echo "Binary log gap detected between $previous_binlog and $binlog_name." >&2
+      exit 1
+    fi
+  fi
+
+  binlog_file="$MYSQL_DATA_DIR/$binlog_name"
+  if [[ ! -s "$binlog_file" ]]; then
+    echo "Closed binary log file is missing or empty: $binlog_file" >&2
+    exit 1
+  fi
+
+  closed_epoch="$(stat -c %Y "$binlog_file")"
+  closed_at="$(date -u -d "@$closed_epoch" +%Y-%m-%dT%H:%M:%SZ)"
+  key_date="$(date -u -d "@$closed_epoch" +%Y/%m/%d)"
+  key_time="$(date -u -d "@$closed_epoch" +%H%M%S)"
+  binlog_checksum="$(sha256_file "$binlog_file")"
+  binlog_size="$(stat -c %s "$binlog_file")"
+  manifest_file="$STAGING_DIR/${database_server_uuid}-${binlog_name}.manifest.json"
+
+  cat >"$manifest_file" <<EOF
+{
+  "schemaVersion": 1,
+  "type": "mysql-binlog",
+  "serverUuid": "$database_server_uuid",
+  "binlogFile": "$binlog_name",
+  "closedAt": "$closed_at",
+  "sizeBytes": $binlog_size,
+  "sha256": "$binlog_checksum"
+}
+EOF
+
+  object_prefix="binlog/$key_date/${key_time}-${database_server_uuid}-${binlog_name}"
+  upload_file_once "$binlog_file" "$object_prefix"
+  # manifest가 존재하는 binlog만 복구 가능한 업로드 완료 파일로 취급합니다.
+  upload_file_once "$manifest_file" "$object_prefix.manifest.json"
+  rm -f "$manifest_file"
+
+  last_uploaded="$binlog_name"
+  write_binlog_state
+  previous_binlog="$binlog_name"
+  uploaded_count=$((uploaded_count + 1))
+done <"$host_binlog_index"
+
+if [[ "$active_found" != "true" ]]; then
+  echo "Active binary log is not present in the binary log index: $active_binlog" >&2
+  exit 1
+fi
+if [[ -n "$previous_binlog" ]]; then
+  previous_number=$((10#${previous_binlog##*.}))
+  active_number=$((10#${active_binlog##*.}))
+  if ((active_number != previous_number + 1)); then
+    echo "Binary log gap detected between $previous_binlog and active log $active_binlog." >&2
+    exit 1
+  fi
+fi
+
+success_epoch="$(date -u +%s)"
+printf '%s\n' "$success_epoch" >"$STATE_DIR/last-binlog-success.tmp"
+mv "$STATE_DIR/last-binlog-success.tmp" "$STATE_DIR/last-binlog-success"
+echo "binlog backup completed: uploaded=$uploaded_count active=$active_binlog"

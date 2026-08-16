@@ -50,6 +50,7 @@ DATA_VOLUME_SERIAL="$(printf '%s' "$DATA_VOLUME_ID" | tr -d '-')"
 DATA_VOLUME_DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$DATA_VOLUME_SERIAL"
 DATA_VOLUME_MOUNT="/mnt/mysql-data"
 MYSQL_DATA_DIR="$DATA_VOLUME_MOUNT/mysql"
+MYSQL_BACKUP_DIR="$DATA_VOLUME_MOUNT/mysql-backup"
 
 for i in $(seq 1 120); do
   if [ -e "$DATA_VOLUME_DEVICE" ]; then
@@ -94,6 +95,11 @@ docker image inspect mysql:8.4.8 >/dev/null
 mkdir -p "$MYSQL_DATA_DIR"
 chown -R 999:999 "$MYSQL_DATA_DIR"
 chmod 750 "$MYSQL_DATA_DIR"
+
+# dump 압축 파일과 업로드 상태는 용량이 작은 루트 볼륨이 아닌 데이터 EBS에 둡니다.
+mkdir -p "$MYSQL_BACKUP_DIR/staging" "$MYSQL_BACKUP_DIR/state"
+chown -R root:root "$MYSQL_BACKUP_DIR"
+chmod 700 "$MYSQL_BACKUP_DIR" "$MYSQL_BACKUP_DIR/staging" "$MYSQL_BACKUP_DIR/state"
 
 mkdir -p /etc/mysql/conf.d
 cat > /etc/mysql/conf.d/tuning.cnf <<'CNFEOF'

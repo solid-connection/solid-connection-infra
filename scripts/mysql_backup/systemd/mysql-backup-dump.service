@@ -1,0 +1,28 @@
+[Unit]
+Description=Upload a consistent MySQL dump to S3
+Requires=docker.service mnt-mysql\x2ddata.mount
+After=docker.service mnt-mysql\x2ddata.mount network-online.target
+Wants=network-online.target
+# TimeoutStartSec와 재시도 간격을 포함한 네 번의 시작을 하나의 제한 구간으로 묶습니다.
+StartLimitIntervalSec=12h
+StartLimitBurst=4
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/solid-connection/mysql-backup.env
+ExecStart=/usr/local/libexec/solid-connection/mysql-backup-dump
+Restart=on-failure
+RestartSec=10min
+TimeoutStartSec=2h
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/mnt/mysql-data/mysql-backup
+
+[Install]
+WantedBy=multi-user.target

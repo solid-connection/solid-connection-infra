@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-backup}"
+# shellcheck source=../lib/backup-common.sh
+source "$LIB_DIR/backup-common.sh"
+
+require_backup_environment
+require_commands aws docker flock gzip sha256sum
+
+readonly MAX_DUMP_JOB_AGE_SECONDS=21600
+
+exec 9>"$STATE_DIR/dump.lock"
+if ! flock -n 9; then
+  echo "Another mysqldump backup is already running." >&2
+  exit 0
+fi
+
+readonly CURRENT_JOB_FILE="$STATE_DIR/dump-current"
+if [[ -s "$CURRENT_JOB_FILE" ]]; then
+  job_id="$(<"$CURRENT_JOB_FILE")"
+  if [[ ! "$job_id" =~ ^[0-9]{8}T[0-9]{6}Z$ ]]; then
+    echo "Invalid persisted dump job id." >&2
+    exit 1
+  fi
+
+  job_created_at="${job_id:0:4}-${job_id:4:2}-${job_id:6:2} ${job_id:9:2}:${job_id:11:2}:${job_id:13:2} UTC"
+  if ! job_created_epoch="$(date -u -d "$job_created_at" +%s)"; then
+    echo "Failed to parse persisted dump job time: $job_id" >&2
+    exit 1
+  fi
+  current_epoch="$(date -u +%s)"
+  job_age_seconds=$((current_epoch - job_created_epoch))
+  if ((job_age_seconds < 0)); then
+    echo "Persisted dump job time is in the future: $job_id" >&2
+    exit 1
+  fi
+  if ((job_age_seconds > MAX_DUMP_JOB_AGE_SECONDS)); then
+    echo "Discarding a stale dump job: job_id=$job_id age_seconds=$job_age_seconds" >&2
+    rm -f "$CURRENT_JOB_FILE"
+    job_id=""
+  fi
+fi
+
+if [[ -z "${job_id:-}" ]]; then
+  job_id="$(date -u +%Y%m%dT%H%M%SZ)"
+  printf '%s\n' "$job_id" >"$CURRENT_JOB_FILE.tmp"
+  mv "$CURRENT_JOB_FILE.tmp" "$CURRENT_JOB_FILE"
+fi
+
+readonly JOB_DIR="$STAGING_DIR/dump-$job_id"
+readonly DUMP_FILE="$JOB_DIR/${MYSQL_DATABASE}-${job_id}.sql.gz"
+readonly CHECKSUM_FILE="$DUMP_FILE.sha256"
+readonly MANIFEST_FILE="$JOB_DIR/manifest.json"
+
+# 완료 포인터 제거 후 프로세스가 종료되어 남은 이전 staging은 다음 실행에서 정리합니다.
+for stale_job_dir in "$STAGING_DIR"/dump-*; do
+  if [[ -d "$stale_job_dir" && "$stale_job_dir" != "$JOB_DIR" ]]; then
+    rm -rf -- "$stale_job_dir"
+  fi
+done
+install -d -m 700 "$JOB_DIR"
+
+if [[ ! -s "$DUMP_FILE" ]]; then
+  partial_dump="$DUMP_FILE.partial"
+  rm -f "$partial_dump"
+  space_status="$(require_dump_staging_space)"
+  read -r database_bytes available_bytes required_bytes <<<"$space_status"
+  echo "MySQL dump staging space is sufficient: database_bytes=$database_bytes available_bytes=$available_bytes required_bytes=$required_bytes"
+
+  docker exec "$MYSQL_CONTAINER" sh -lc \
+    'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --quick --source-data=2 --routines --events --triggers --hex-blob --set-gtid-purged=OFF --no-tablespaces "$1"' \
+    sh "$MYSQL_DATABASE" | gzip -1 >"$partial_dump"
+
+  test -s "$partial_dump"
+  mv "$partial_dump" "$DUMP_FILE"
+fi
+
+dump_checksum="$(sha256_file "$DUMP_FILE")"
+printf '%s  %s\n' "$dump_checksum" "$(basename "$DUMP_FILE")" >"$CHECKSUM_FILE"
+
+source_status="$(gzip -dc "$DUMP_FILE" | grep -m1 '^-- CHANGE REPLICATION SOURCE TO' || true)"
+if [[ -z "$source_status" ]]; then
+  echo "The dump does not contain a binary log recovery position." >&2
+  exit 1
+fi
+
+source_file="$(sed -n "s/.*SOURCE_LOG_FILE='\([^']*\)'.*/\1/p" <<<"$source_status")"
+source_position="$(sed -n 's/.*SOURCE_LOG_POS=\([0-9]*\).*/\1/p' <<<"$source_status")"
+database_server_uuid="$(server_uuid)"
+dump_size="$(stat -c %s "$DUMP_FILE")"
+created_at="${job_id:0:4}-${job_id:4:2}-${job_id:6:2}T${job_id:9:2}:${job_id:11:2}:${job_id:13:2}Z"
+
+if [[ ! "$source_file" =~ ^binlog\.[0-9]{6}$ || ! "$source_position" =~ ^[0-9]+$ || ! "$database_server_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "Failed to parse dump recovery metadata." >&2
+  exit 1
+fi
+
+cat >"$MANIFEST_FILE" <<EOF
+{
+  "schemaVersion": 1,
+  "type": "mysql-full-dump",
+  "database": "$MYSQL_DATABASE",
+  "createdAt": "$created_at",
+  "serverUuid": "$database_server_uuid",
+  "sourceLogFile": "$source_file",
+  "sourceLogPosition": $source_position,
+  "dumpFile": "$(basename "$DUMP_FILE")",
+  "compressedSizeBytes": $dump_size,
+  "sha256": "$dump_checksum"
+}
+EOF
+
+readonly OBJECT_PREFIX="dump/${job_id:0:4}/${job_id:4:2}/${job_id:6:2}/$job_id"
+upload_file_once "$DUMP_FILE" "$OBJECT_PREFIX/$(basename "$DUMP_FILE")"
+upload_file_once "$CHECKSUM_FILE" "$OBJECT_PREFIX/$(basename "$CHECKSUM_FILE")"
+# manifest를 마지막에 업로드하여 해당 prefix의 백업 완료 표식으로 사용합니다.
+upload_file_once "$MANIFEST_FILE" "$OBJECT_PREFIX/manifest.json"
+
+printf '%s\n' "$created_at" >"$STATE_DIR/last-dump-success.tmp"
+mv "$STATE_DIR/last-dump-success.tmp" "$STATE_DIR/last-dump-success"
+rm -f "$CURRENT_JOB_FILE"
+rm -rf "$JOB_DIR"
+echo "mysqldump backup completed: $OBJECT_PREFIX"
