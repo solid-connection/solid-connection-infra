@@ -72,7 +72,9 @@ resource "aws_instance" "db_server" {
   user_data_replace_on_change = false
 
   lifecycle {
+    # AMI 갱신이 운영 중인 DB EC2를 교체하지 않도록 무시하고, 인스턴스가 재생성되는 시점에 새 AMI를 적용합니다.
     ignore_changes = [
+      ami,
       key_name,
       user_data,
       user_data_base64,
