@@ -23,7 +23,7 @@ if [[ ! -f "$CONFIG_SOURCE" ]]; then
   exit 1
 fi
 
-for command_name in aws bash cp docker flock gzip install mountpoint mv sha256sum systemctl systemd-analyze; do
+for command_name in aws bash cp curl docker flock gzip install mountpoint mv sha256sum systemctl systemd-analyze; do
   command -v "$command_name" >/dev/null || {
     echo "Required command is not installed: $command_name" >&2
     exit 1
@@ -66,7 +66,7 @@ load_candidate_config() {
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION)
+      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_TOKEN)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;

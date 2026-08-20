@@ -78,10 +78,13 @@ set -Eeuo pipefail
 readonly BACKUP_ROOT="$TEST_BACKUP_ROOT"
 readonly MYSQL_CONTAINER="mysql-server"
 require_backup_environment() { :; }
+require_alarm_environment() { :; }
 require_commands() { :; }
 mountpoint() { :; }
 docker() { :; }
 aws() { :; }
+# 알림 경로의 tcp 확인을 통과시킨다
+timeout() { return 0; }
 require_dump_staging_space() { printf '%s\n' '1024 9999999999 268437504'; }
 mysql_query() {
   if [[ "$1" == *'@@log_bin'* ]]; then
@@ -102,6 +105,9 @@ EOF
   MYSQL_BACKUP_BUCKET="test-bucket" \
   MYSQL_DATABASE="test_database" \
   AWS_REGION="ap-northeast-2" \
+  ALARM_API_HOST="172.31.0.10" \
+  ALARM_API_PORTS="8080 9080" \
+  ALARM_API_TOKEN="test-token" \
   MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
     bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null
 
@@ -110,6 +116,9 @@ EOF
     MYSQL_BACKUP_BUCKET="test-bucket" \
     MYSQL_DATABASE="missing_database" \
     AWS_REGION="ap-northeast-2" \
+    ALARM_API_HOST="172.31.0.10" \
+    ALARM_API_PORTS="8080 9080" \
+    ALARM_API_TOKEN="test-token" \
     MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
       bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null 2>&1; then
     echo "Validation must reject a missing backup database." >&2
@@ -136,6 +145,29 @@ readonly AWS_REGION="${AWS_REGION:-ap-northeast-2}"
 require_backup_environment() { :; }
 require_commands() { :; }
 flock() { return 0; }
+curl() { return 0; }
+instance_id() { printf '%s' 'i-test'; }
+alarm_sent=false
+send_backup_alarm() {
+  if [[ -n "${TEST_ALARM_LOG:-}" ]]; then
+    printf '%s\n' "$1" >>"$TEST_ALARM_LOG"
+  fi
+  alarm_sent=true
+  return 0
+}
+fail_with_alarm() {
+  echo "$2" >&2
+  send_backup_alarm "$1" "$2"
+  exit 1
+}
+alarm_on_unexpected_failure() {
+  local exit_code=$?
+  if ((exit_code != 0)) && [[ "$alarm_sent" != "true" ]]; then
+    send_backup_alarm "$1" "unexpected failure with exit code $exit_code"
+  fi
+  return 0
+}
+alarm_if_upload_delayed() { :; }
 aws() { printf '%s' "${TEST_S3_KEYS:-}"; }
 require_dump_staging_space() {
   if [[ -n "${TEST_SPACE_CHECK_LOG:-}" ]]; then
@@ -500,6 +532,174 @@ EOF
   fi
 }
 
+test_backup_alarm_port_fallback() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    export ALARM_API_HOST="172.31.0.10"
+    export ALARM_API_PORTS="8080 9080"
+    export ALARM_API_TOKEN="test-token"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    local attempt_log="$TEST_ROOT/alarm-attempts"
+    : >"$attempt_log"
+    instance_id() { printf '%s' 'i-test'; }
+    # 활성 슬롯만 응답하는 상황을 재현한다. blue 는 닫혀 있고 green 만 열려 있다.
+    curl() {
+      local argument
+      for argument in "$@"; do
+        case "$argument" in
+          http://*:8080/*) echo "8080" >>"$attempt_log"; return 7 ;;
+          http://*:9080/*) echo "9080" >>"$attempt_log"; return 0 ;;
+        esac
+      done
+      return 0
+    }
+
+    send_backup_alarm DUMP_FAILED "test detail" >/dev/null
+    assert_equals \
+      "8080 9080" \
+      "$(tr '\n' ' ' <"$attempt_log" | sed 's/ $//')" \
+      "the alarm must try the blue port first and fall back to the green port"
+    assert_equals "true" "$alarm_sent" "a delivered alarm must mark the sent flag"
+  )
+}
+
+test_backup_alarm_failure_does_not_break_backup() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    export ALARM_API_HOST="172.31.0.10"
+    export ALARM_API_PORTS="8080 9080"
+    export ALARM_API_TOKEN="test-token"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    instance_id() { printf '%s' 'i-test'; }
+    curl() { return 7; }
+
+    if ! send_backup_alarm DUMP_FAILED "test detail" >/dev/null 2>&1; then
+      echo "An alarm delivery failure must not fail the backup." >&2
+      exit 1
+    fi
+    assert_equals "false" "$alarm_sent" "an undelivered alarm must not mark the sent flag"
+  )
+}
+
+test_backup_alarm_skipped_without_configuration() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    curl() { echo "The alarm must not be sent without configuration." >&2; return 99; }
+    instance_id() { printf '%s' 'i-test'; }
+
+    send_backup_alarm DUMP_FAILED "test detail" >/dev/null 2>&1
+    assert_equals "false" "$alarm_sent" "an alarm without configuration must not be marked as sent"
+  )
+}
+
+test_backup_alarm_detail_escaping() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    assert_equals \
+      'say \"hi\"' \
+      "$(json_escape 'say "hi"')" \
+      "double quotes in the detail must be escaped for json"
+    assert_equals \
+      'a\\b' \
+      "$(json_escape 'a\b')" \
+      "backslashes in the detail must be escaped for json"
+    assert_equals \
+      'first\nsecond' \
+      "$(json_escape "$(printf 'first\nsecond')")" \
+      "newlines in the detail must be escaped for json"
+  )
+}
+
+test_unexpected_failure_alarm_is_sent_once() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    export ALARM_API_HOST="172.31.0.10"
+    export ALARM_API_PORTS="8080"
+    export ALARM_API_TOKEN="test-token"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    local send_log="$TEST_ROOT/alarm-send-count"
+    : >"$send_log"
+    instance_id() { printf '%s' 'i-test'; }
+    curl() { echo "sent" >>"$send_log"; return 0; }
+
+    # 이미 알린 실패에는 종료 시점 알림을 중복해서 보내지 않는다.
+    send_backup_alarm DUMP_FAILED "explicit failure" >/dev/null
+    ( exit 1 ) || alarm_on_unexpected_failure DUMP_FAILED
+    assert_equals \
+      "1" \
+      "$(wc -l <"$send_log" | tr -d ' ')" \
+      "an already reported failure must not be alarmed twice"
+  )
+}
+
+test_binlog_delay_alarm_threshold() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    local alarm_log="$TEST_ROOT/delay-alarm.log"
+    local success_file="$TEST_ROOT/last-binlog-success"
+    send_backup_alarm() { printf '%s\n' "$1" >>"$alarm_log"; alarm_sent=true; return 0; }
+    date() {
+      if [[ "$*" == "-u +%s" ]]; then
+        printf '%s\n' '1784170800'
+      else
+        command date "$@"
+      fi
+    }
+
+    # 한 주기(5분)만 지난 상태는 정상 범위로 보고 알리지 않는다.
+    : >"$alarm_log"
+    printf '%s\n' '1784170500' >"$success_file"
+    alarm_if_upload_delayed "$success_file" 900
+    assert_equals "" "$(cat "$alarm_log")" "a single missed cycle must not raise a delay alarm"
+
+    # 세 주기를 넘기면 지연으로 알린다.
+    : >"$alarm_log"
+    printf '%s\n' '1784169600' >"$success_file"
+    alarm_if_upload_delayed "$success_file" 900
+    assert_equals \
+      "BINLOG_UPLOAD_DELAYED" \
+      "$(cat "$alarm_log")" \
+      "an upload delayed beyond three cycles must be alarmed"
+    assert_equals \
+      "false" \
+      "$alarm_sent" \
+      "a delay alarm must not suppress the alarm for an actual failure in the same run"
+
+    # 마지막 성공 기록이 없으면 판단하지 않는다.
+    : >"$alarm_log"
+    rm -f "$success_file"
+    alarm_if_upload_delayed "$success_file" 900
+    assert_equals "" "$(cat "$alarm_log")" "a missing success record must not raise a delay alarm"
+  )
+}
+
 test_upload_idempotency
 test_dump_space_calculation
 test_validate_requires_schema
@@ -507,4 +707,10 @@ test_binlog_chain
 test_dump_retry_manifest
 test_dump_rejects_insufficient_space
 test_dump_discards_stale_job
+test_backup_alarm_port_fallback
+test_backup_alarm_failure_does_not_break_backup
+test_backup_alarm_skipped_without_configuration
+test_backup_alarm_detail_escaping
+test_unexpected_failure_alarm_is_sent_once
+test_binlog_delay_alarm_threshold
 echo "All MySQL backup tests passed."

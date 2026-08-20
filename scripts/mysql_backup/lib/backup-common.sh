@@ -7,6 +7,13 @@ readonly STATE_DIR="$BACKUP_ROOT/state"
 readonly MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/mnt/mysql-data/mysql}"
 readonly MYSQL_CONTAINER="${MYSQL_CONTAINER:-mysql-server}"
 readonly DUMP_SPACE_RESERVE_BYTES=268435456
+readonly ALARM_PATH="/internal/alarms/db-backup"
+readonly ALARM_TIMEOUT_SECONDS=5
+readonly ALARM_RETRY_COUNT=2
+readonly ALARM_DETAIL_MAX_LENGTH=1000
+
+# 같은 실패로 알림이 두 번 나가지 않도록 전송 여부를 기록합니다.
+alarm_sent=false
 
 require_backup_environment() {
   : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET is required}"
@@ -129,4 +136,130 @@ upload_file_once() {
     --only-show-errors \
     --no-progress \
     --metadata "sha256=$checksum"
+}
+
+require_alarm_environment() {
+  : "${ALARM_API_HOST:?ALARM_API_HOST is required}"
+  : "${ALARM_API_PORTS:?ALARM_API_PORTS is required}"
+  : "${ALARM_API_TOKEN:?ALARM_API_TOKEN is required}"
+
+  if [[ ! "$ALARM_API_HOST" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "Invalid alarm api host." >&2
+    return 1
+  fi
+  if [[ ! "$ALARM_API_PORTS" =~ ^[0-9]+( [0-9]+)*$ ]]; then
+    echo "Invalid alarm api ports." >&2
+    return 1
+  fi
+}
+
+instance_id() {
+  local metadata_token
+
+  metadata_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    --max-time 2 2>/dev/null)" || return 1
+  curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" \
+    "http://169.254.169.254/latest/meta-data/instance-id" \
+    --max-time 2 2>/dev/null
+}
+
+# sed 의 N 명령은 GNU 와 BSD 동작이 달라 한 줄 입력에서 결과가 사라지므로 bash 치환만 사용합니다.
+json_escape() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\t'/ }"
+  value="${value//$'\n'/\\n}"
+  printf '%s' "$value"
+}
+
+# 활성 슬롯을 알 수 없으므로 blue, green 순서로 시도하고 먼저 응답한 쪽으로 보냅니다.
+# 알림 전송 실패가 백업 자체를 실패시키지 않도록 항상 0으로 종료합니다.
+send_backup_alarm() {
+  local alarm_type="$1"
+  local detail="$2"
+  local target_instance_id
+  local header_config
+  local payload
+  local port
+
+  if [[ -z "${ALARM_API_HOST:-}" || -z "${ALARM_API_TOKEN:-}" ]]; then
+    echo "Alarm target is not configured; skipping the backup alarm." >&2
+    return 0
+  fi
+
+  target_instance_id="$(instance_id)" || target_instance_id="unknown"
+  payload="$(printf '{"type":"%s","instanceId":"%s","occurredAt":"%s","detail":"%s"}' \
+    "$alarm_type" \
+    "$target_instance_id" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(json_escape "${detail:0:ALARM_DETAIL_MAX_LENGTH}")")"
+
+  # 토큰이 프로세스 목록에 남지 않도록 헤더를 설정 파일로 전달합니다.
+  header_config="$(mktemp)"
+  chmod 600 "$header_config"
+  printf 'header = "X-Internal-Alarm-Token: %s"\n' "$ALARM_API_TOKEN" >"$header_config"
+
+  for port in ${ALARM_API_PORTS}; do
+    if curl -fsS \
+      --config "$header_config" \
+      --max-time "$ALARM_TIMEOUT_SECONDS" \
+      --retry "$ALARM_RETRY_COUNT" \
+      --retry-delay 3 \
+      -X POST "http://${ALARM_API_HOST}:${port}${ALARM_PATH}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" >/dev/null 2>&1; then
+      rm -f "$header_config"
+      alarm_sent=true
+      echo "Sent a backup alarm: type=$alarm_type port=$port"
+      return 0
+    fi
+  done
+
+  rm -f "$header_config"
+  echo "Failed to send a backup alarm: type=$alarm_type" >&2
+  return 0
+}
+
+fail_with_alarm() {
+  local alarm_type="$1"
+  local detail="$2"
+
+  echo "$detail" >&2
+  send_backup_alarm "$alarm_type" "$detail"
+  exit 1
+}
+
+# 명시적으로 처리하지 않은 실패도 알리기 위해 스크립트 종료 시점에 한 번 더 확인합니다.
+alarm_on_unexpected_failure() {
+  local exit_code=$?
+  local default_alarm_type="$1"
+
+  if ((exit_code != 0)) && [[ "$alarm_sent" != "true" ]]; then
+    send_backup_alarm "$default_alarm_type" "unexpected failure with exit code $exit_code"
+  fi
+  return 0
+}
+
+# 스크립트는 돌고 있지만 업로드가 계속 실패해 마지막 성공이 오래된 경우를 알립니다.
+# EC2 나 타이머 자체가 멈춘 경우는 이 방식으로 감지할 수 없어 외부 모니터링이 필요합니다.
+alarm_if_upload_delayed() {
+  local success_file="$1"
+  local threshold_seconds="$2"
+  local last_success_epoch
+  local elapsed_seconds
+
+  [[ -s "$success_file" ]] || return 0
+  last_success_epoch="$(<"$success_file")"
+  [[ "$last_success_epoch" =~ ^[0-9]+$ ]] || return 0
+
+  elapsed_seconds=$(( $(date -u +%s) - last_success_epoch ))
+  if ((elapsed_seconds > threshold_seconds)); then
+    send_backup_alarm BINLOG_UPLOAD_DELAYED \
+      "the last successful binlog upload was $elapsed_seconds seconds ago"
+    # 지연은 실패가 아니므로, 이번 실행이 실제로 실패하면 다시 알릴 수 있도록 되돌립니다.
+    alarm_sent=false
+  fi
 }

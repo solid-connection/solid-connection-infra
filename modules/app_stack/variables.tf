@@ -201,3 +201,8 @@ variable "alloy_version" {
   description = "Docker image tag for Grafana Alloy"
   type        = string
 }
+
+variable "internal_alarm_api_ports" {
+  description = "DB EC2가 백업 실패 알림을 보내는 API 서버의 Blue/Green app 포트"
+  type        = list(number)
+}

@@ -159,3 +159,14 @@ variable "alloy_version" {
   description = "Docker image tag for Grafana Alloy"
   type        = string
 }
+
+variable "mysql_backup_fail_alarm_request_token" {
+  description = "백업 실패 알림 API 호출에 사용하는 공유 토큰. Terraform은 이 값을 사용하지 않고 배포 워크플로우가 tfvars에서 직접 읽는다."
+  type        = string
+  sensitive   = true
+}
+
+variable "internal_alarm_api_ports" {
+  description = "DB EC2가 백업 실패 알림을 보내는 API 서버의 Blue/Green app 포트"
+  type        = list(number)
+}

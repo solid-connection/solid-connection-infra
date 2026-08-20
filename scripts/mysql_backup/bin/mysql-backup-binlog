@@ -6,7 +6,15 @@ readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-
 source "$LIB_DIR/backup-common.sh"
 
 require_backup_environment
-require_commands aws docker flock sha256sum
+require_commands aws curl docker flock sha256sum
+
+# 타이머 주기(5분)와 같은 값을 쓰면 정상 동작 중에도 경계에서 매번 지연으로 판정되므로 3주기로 둔다.
+readonly UPLOAD_DELAY_THRESHOLD_SECONDS=900
+
+# 명시적으로 처리하지 않은 실패도 알리도록 등록합니다.
+trap 'alarm_on_unexpected_failure BINLOG_UPLOAD_FAILED' EXIT
+
+alarm_if_upload_delayed "$STATE_DIR/last-binlog-success" "$UPLOAD_DELAY_THRESHOLD_SECONDS"
 
 exec 9>"$STATE_DIR/binlog.lock"
 if ! flock -n 9; then
@@ -53,8 +61,7 @@ host_binlog_index="$MYSQL_DATA_DIR/$(basename "$binlog_basename").index"
 
 if ! validate_binlog_name "$active_binlog" || \
   [[ ! "$database_server_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-  echo "Unexpected MySQL binary log metadata." >&2
-  exit 1
+  fail_with_alarm BINLOG_UPLOAD_FAILED "unexpected mysql binary log metadata"
 fi
 if [[ ! -r "$host_binlog_index" ]]; then
   echo "MySQL binary log index is not readable: $host_binlog_index" >&2
@@ -131,8 +138,8 @@ if [[ -n "$last_uploaded" ]]; then
   active_number=$((10#${active_binlog##*.}))
   last_uploaded_number=$((10#${last_uploaded##*.}))
   if ((active_number <= last_uploaded_number)); then
-    echo "Binary log numbering moved backwards. Clear the state only after starting a new verified backup chain." >&2
-    exit 1
+    fail_with_alarm BINLOG_GAP_DETECTED \
+      "binary log numbering moved backwards: active=$active_binlog last_uploaded=$last_uploaded"
   fi
 fi
 
@@ -152,8 +159,7 @@ if [[ "$rotation_to" == "-" ]]; then
     observed_active_binlog="$(read_active_binlog)"
   fi
   if ! validate_binlog_name "$observed_active_binlog" || [[ "$observed_active_binlog" == "$rotation_from" ]]; then
-    echo "MySQL binary log rotation did not advance from $rotation_from." >&2
-    exit 1
+    fail_with_alarm BINLOG_UPLOAD_FAILED "binary log rotation did not advance from $rotation_from"
   fi
   rotation_to="$observed_active_binlog"
   write_binlog_state
@@ -188,15 +194,14 @@ while IFS= read -r indexed_path; do
     previous_number=$((10#${previous_binlog##*.}))
     current_number=$((10#${binlog_name##*.}))
     if ((current_number != previous_number + 1)); then
-      echo "Binary log gap detected between $previous_binlog and $binlog_name." >&2
-      exit 1
+      fail_with_alarm BINLOG_GAP_DETECTED \
+        "binary log gap detected between $previous_binlog and $binlog_name"
     fi
   fi
 
   binlog_file="$MYSQL_DATA_DIR/$binlog_name"
   if [[ ! -s "$binlog_file" ]]; then
-    echo "Closed binary log file is missing or empty: $binlog_file" >&2
-    exit 1
+    fail_with_alarm BINLOG_GAP_DETECTED "closed binary log file is missing or empty: $binlog_name"
   fi
 
   closed_epoch="$(stat -c %Y "$binlog_file")"
@@ -220,9 +225,13 @@ while IFS= read -r indexed_path; do
 EOF
 
   object_prefix="binlog/$key_date/${key_time}-${database_server_uuid}-${binlog_name}"
-  upload_file_once "$binlog_file" "$object_prefix"
+  if ! upload_file_once "$binlog_file" "$object_prefix"; then
+    fail_with_alarm BINLOG_UPLOAD_FAILED "failed to upload the binary log to s3: $binlog_name"
+  fi
   # manifest가 존재하는 binlog만 복구 가능한 업로드 완료 파일로 취급합니다.
-  upload_file_once "$manifest_file" "$object_prefix.manifest.json"
+  if ! upload_file_once "$manifest_file" "$object_prefix.manifest.json"; then
+    fail_with_alarm BINLOG_UPLOAD_FAILED "failed to upload the binary log manifest to s3: $binlog_name"
+  fi
   rm -f "$manifest_file"
 
   last_uploaded="$binlog_name"
@@ -232,15 +241,15 @@ EOF
 done <"$host_binlog_index"
 
 if [[ "$active_found" != "true" ]]; then
-  echo "Active binary log is not present in the binary log index: $active_binlog" >&2
-  exit 1
+  fail_with_alarm BINLOG_GAP_DETECTED \
+    "active binary log is not present in the binary log index: $active_binlog"
 fi
 if [[ -n "$previous_binlog" ]]; then
   previous_number=$((10#${previous_binlog##*.}))
   active_number=$((10#${active_binlog##*.}))
   if ((active_number != previous_number + 1)); then
-    echo "Binary log gap detected between $previous_binlog and active log $active_binlog." >&2
-    exit 1
+    fail_with_alarm BINLOG_GAP_DETECTED \
+      "binary log gap detected between $previous_binlog and active log $active_binlog"
   fi
 fi
 

@@ -6,7 +6,8 @@ readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-
 source "$LIB_DIR/backup-common.sh"
 
 require_backup_environment
-require_commands aws docker flock gzip sha256sum
+require_alarm_environment
+require_commands aws curl docker flock gzip sha256sum timeout
 
 mountpoint -q /mnt/mysql-data
 docker inspect "$MYSQL_CONTAINER" >/dev/null
@@ -41,6 +42,21 @@ read -r database_bytes available_bytes required_bytes <<<"$space_status"
 aws s3api head-bucket \
   --bucket "$MYSQL_BACKUP_BUCKET" \
   --region "$AWS_REGION" >/dev/null
+
+# 알림 경로가 실제로 닿는지 확인합니다.
+# actuator 는 management 포트에만 열려 있고 비활성 슬롯은 내려가 있으므로, app 포트의 tcp 연결로 확인합니다.
+alarm_endpoint_reachable=false
+for alarm_port in ${ALARM_API_PORTS}; do
+  if timeout 3 bash -c "exec 3<>/dev/tcp/${ALARM_API_HOST}/${alarm_port}" 2>/dev/null; then
+    alarm_endpoint_reachable=true
+    echo "Alarm api is reachable on port $alarm_port."
+    break
+  fi
+done
+if [[ "$alarm_endpoint_reachable" != "true" ]]; then
+  echo "Alarm api is not reachable on any of the configured ports: $ALARM_API_PORTS" >&2
+  exit 1
+fi
 
 echo "MySQL backup validation succeeded."
 echo "database_bytes=$database_bytes available_bytes=$available_bytes required_bytes=$required_bytes"

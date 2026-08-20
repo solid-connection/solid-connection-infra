@@ -34,6 +34,8 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
 
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
@@ -92,16 +94,29 @@ jobs:
       - name: Validate or install MySQL backup
         env:
           DEPLOY_MODE: ${{ inputs.mode }}
-          MYSQL_BACKUP_BUCKET: ${{ vars.MYSQL_BACKUP_BUCKET_NAME }}
-          MYSQL_DATABASE: ${{ vars.MYSQL_BACKUP_DATABASE_NAME }}
-          DB_HOST_FINGERPRINT: ${{ vars.PROD_DB_SSH_HOST_KEY_ED25519 }}
+          MYSQL_BACKUP_BUCKET: ${{ secrets.MYSQL_BACKUP_BUCKET_NAME }}
+          MYSQL_DATABASE: ${{ secrets.MYSQL_BACKUP_DATABASE_NAME }}
+          DB_HOST_FINGERPRINT: ${{ secrets.PROD_DB_SSH_HOST_KEY_ED25519 }}
+          ALARM_TFVARS_PATH: config/secrets/prod_db.tfvars
         run: |
           set -Eeuo pipefail
           umask 077
 
-          : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET_NAME repository variable is required}"
-          : "${MYSQL_DATABASE:?MYSQL_BACKUP_DATABASE_NAME repository variable is required}"
-          : "${DB_HOST_FINGERPRINT:?PROD_DB_SSH_HOST_KEY_ED25519 repository variable is required}"
+          : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET_NAME repository secret is required}"
+          : "${MYSQL_DATABASE:?MYSQL_BACKUP_DATABASE_NAME repository secret is required}"
+          : "${DB_HOST_FINGERPRINT:?PROD_DB_SSH_HOST_KEY_ED25519 repository secret is required}"
+
+          # 알림 토큰은 tfvars 를 단일 원천으로 두므로 secrets submodule 에서 읽는다.
+          if [[ ! -f "$ALARM_TFVARS_PATH" ]]; then
+            echo "::error::$ALARM_TFVARS_PATH is missing; check the secrets submodule checkout"
+            exit 1
+          fi
+          ALARM_API_TOKEN="$(sed -n 's/^[[:space:]]*mysql_backup_fail_alarm_request_token[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$ALARM_TFVARS_PATH" | head -1)"
+          if [[ -z "$ALARM_API_TOKEN" ]]; then
+            echo "::error::mysql_backup_fail_alarm_request_token is missing in $ALARM_TFVARS_PATH"
+            exit 1
+          fi
+          echo "::add-mask::$ALARM_API_TOKEN"
           if [[ "$DEPLOY_MODE" != "validate" && "$DEPLOY_MODE" != "install" ]]; then
             echo "::error::Invalid deployment mode"
             exit 1
@@ -162,6 +177,18 @@ jobs:
             exit 1
           fi
 
+          # DB EC2 는 인터넷 경로가 없어 API EC2 의 private ip 로 알림을 보낸다.
+          ALARM_API_HOST="$(aws ec2 describe-instances \
+            --instance-ids "$API_INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text)"
+          if [[ -z "$ALARM_API_HOST" || "$ALARM_API_HOST" == "None" ]]; then
+            echo "::error::Prod API EC2 private IP was not found"
+            exit 1
+          fi
+          # Blue/Green 활성 슬롯을 알 수 없으므로 두 슬롯의 app 포트를 순서대로 시도한다.
+          ALARM_API_PORTS="8080 9080"
+
           aws ssm start-session \
             --target "$API_INSTANCE_ID" \
             --document-name AWS-StartPortForwardingSessionToRemoteHost \
@@ -202,7 +229,7 @@ jobs:
               --instance-id "$DB_INSTANCE_ID" \
               --instance-os-user ubuntu \
               --ssh-public-key "file://$KEY_DIR/id_ed25519.pub" >/dev/null
-            REMOTE_VALIDATE_COMMAND="env MYSQL_BACKUP_BUCKET=$(printf '%q' "$MYSQL_BACKUP_BUCKET") MYSQL_DATABASE=$(printf '%q' "$MYSQL_DATABASE") AWS_REGION=$(printf '%q' "$AWS_REGION") bash -s"
+            REMOTE_VALIDATE_COMMAND="env MYSQL_BACKUP_BUCKET=$(printf '%q' "$MYSQL_BACKUP_BUCKET") MYSQL_DATABASE=$(printf '%q' "$MYSQL_DATABASE") AWS_REGION=$(printf '%q' "$AWS_REGION") ALARM_API_HOST=$(printf '%q' "$ALARM_API_HOST") ALARM_API_PORTS=$(printf '%q' "$ALARM_API_PORTS") ALARM_API_TOKEN=$(printf '%q' "$ALARM_API_TOKEN") bash -s"
             ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 \
               "sudo bash -c $(printf '%q' "$REMOTE_VALIDATE_COMMAND")" \
               < scripts/mysql_backup/validate-remote.sh
@@ -214,6 +241,9 @@ jobs:
             printf 'MYSQL_BACKUP_BUCKET=%s\n' "$MYSQL_BACKUP_BUCKET"
             printf 'MYSQL_DATABASE=%s\n' "$MYSQL_DATABASE"
             printf 'AWS_REGION=%s\n' "$AWS_REGION"
+            printf 'ALARM_API_HOST=%s\n' "$ALARM_API_HOST"
+            printf 'ALARM_API_PORTS=%s\n' "$ALARM_API_PORTS"
+            printf 'ALARM_API_TOKEN=%s\n' "$ALARM_API_TOKEN"
           } >"$CONFIG_FILE"
 
           cp -R scripts/mysql_backup "$KEY_DIR/bundle"
