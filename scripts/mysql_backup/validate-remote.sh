@@ -43,14 +43,28 @@ done
 : "${ALARM_API_HOST:?ALARM_API_HOST is required for pre-installation validation}"
 : "${ALARM_API_PORTS:?ALARM_API_PORTS is required for pre-installation validation}"
 : "${ALARM_API_TOKEN:?ALARM_API_TOKEN is required for pre-installation validation}"
+# 설치 전에는 공용 라이브러리가 없으므로 같은 범위 검증을 여기에 둡니다.
+# 8진수로 해석되지 않도록 10# 을 붙여 비교합니다.
 if [[ ! "$ALARM_API_HOST" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-  echo "Invalid alarm api host." >&2
+  echo "Invalid alarm api host: $ALARM_API_HOST" >&2
   exit 1
 fi
+for alarm_host_octet in ${ALARM_API_HOST//./ }; do
+  if ((10#$alarm_host_octet > 255)); then
+    echo "Invalid alarm api host: $ALARM_API_HOST" >&2
+    exit 1
+  fi
+done
 if [[ ! "$ALARM_API_PORTS" =~ ^[0-9]+( [0-9]+)*$ ]]; then
-  echo "Invalid alarm api ports." >&2
+  echo "Invalid alarm api ports: $ALARM_API_PORTS" >&2
   exit 1
 fi
+for alarm_port in $ALARM_API_PORTS; do
+  if ((10#$alarm_port < 1 || 10#$alarm_port > 65535)); then
+    echo "Invalid alarm api ports: $ALARM_API_PORTS" >&2
+    exit 1
+  fi
+done
 if [[ ! "$MYSQL_BACKUP_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
   echo "Invalid S3 bucket name." >&2
   exit 1

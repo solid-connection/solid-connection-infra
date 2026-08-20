@@ -143,14 +143,37 @@ require_alarm_environment() {
   : "${ALARM_API_PORTS:?ALARM_API_PORTS is required}"
   : "${ALARM_API_TOKEN:?ALARM_API_TOKEN is required}"
 
-  if [[ ! "$ALARM_API_HOST" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
-    echo "Invalid alarm api host." >&2
+  validate_alarm_target "$ALARM_API_HOST" "$ALARM_API_PORTS"
+}
+
+# 8진수로 해석되지 않도록 10# 을 붙여 비교합니다.
+validate_alarm_target() {
+  local host="$1"
+  local ports="$2"
+  local octet
+  local port
+
+  if [[ ! "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "Invalid alarm api host: $host" >&2
     return 1
   fi
-  if [[ ! "$ALARM_API_PORTS" =~ ^[0-9]+( [0-9]+)*$ ]]; then
-    echo "Invalid alarm api ports." >&2
+  for octet in ${host//./ }; do
+    if ((10#$octet > 255)); then
+      echo "Invalid alarm api host: $host" >&2
+      return 1
+    fi
+  done
+
+  if [[ ! "$ports" =~ ^[0-9]+( [0-9]+)*$ ]]; then
+    echo "Invalid alarm api ports: $ports" >&2
     return 1
   fi
+  for port in $ports; do
+    if ((10#$port < 1 || 10#$port > 65535)); then
+      echo "Invalid alarm api ports: $ports" >&2
+      return 1
+    fi
+  done
 }
 
 instance_id() {
@@ -198,9 +221,17 @@ send_backup_alarm() {
     "$(json_escape "${detail:0:ALARM_DETAIL_MAX_LENGTH}")")"
 
   # 토큰이 프로세스 목록에 남지 않도록 헤더를 설정 파일로 전달합니다.
-  header_config="$(mktemp)"
-  chmod 600 "$header_config"
-  printf 'header = "X-Internal-Alarm-Token: %s"\n' "$ALARM_API_TOKEN" >"$header_config"
+  # 준비 단계가 실패해도 백업 자체는 계속되어야 하므로 항상 0 으로 돌아갑니다.
+  if ! header_config="$(mktemp 2>/dev/null)"; then
+    echo "Failed to create a temporary file for the backup alarm request." >&2
+    return 0
+  fi
+  if ! chmod 600 "$header_config" 2>/dev/null \
+    || ! printf 'header = "X-Internal-Alarm-Token: %s"\n' "$ALARM_API_TOKEN" >"$header_config" 2>/dev/null; then
+    echo "Failed to prepare the backup alarm request." >&2
+    rm -f "$header_config"
+    return 0
+  fi
 
   for port in ${ALARM_API_PORTS}; do
     if curl -fsS \

@@ -5,14 +5,14 @@ readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-
 # shellcheck source=../lib/backup-common.sh
 source "$LIB_DIR/backup-common.sh"
 
+# 사전 조건 검사 실패도 알리도록 소싱 직후에 등록합니다.
+trap 'alarm_on_unexpected_failure BINLOG_UPLOAD_FAILED' EXIT
+
 require_backup_environment
 require_commands aws curl docker flock sha256sum
 
 # 타이머 주기(5분)와 같은 값을 쓰면 정상 동작 중에도 경계에서 매번 지연으로 판정되므로 3주기로 둔다.
 readonly UPLOAD_DELAY_THRESHOLD_SECONDS=900
-
-# 명시적으로 처리하지 않은 실패도 알리도록 등록합니다.
-trap 'alarm_on_unexpected_failure BINLOG_UPLOAD_FAILED' EXIT
 
 alarm_if_upload_delayed "$STATE_DIR/last-binlog-success" "$UPLOAD_DELAY_THRESHOLD_SECONDS"
 

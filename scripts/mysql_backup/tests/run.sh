@@ -700,6 +700,45 @@ test_binlog_delay_alarm_threshold() {
   )
 }
 
+test_alarm_target_validation() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    if ! validate_alarm_target "172.31.56.245" "8080 9080" 2>/dev/null; then
+      echo "A valid alarm target must pass validation." >&2
+      exit 1
+    fi
+
+    # 옥텟 범위를 넘는 주소는 형식만 맞아도 거부한다.
+    if validate_alarm_target "999.999.999.999" "8080" 2>/dev/null; then
+      echo "An out-of-range octet must be rejected." >&2
+      exit 1
+    fi
+    if validate_alarm_target "172.31.56" "8080" 2>/dev/null; then
+      echo "An incomplete address must be rejected." >&2
+      exit 1
+    fi
+
+    # 포트 범위를 벗어나면 거부한다.
+    if validate_alarm_target "172.31.56.245" "0" 2>/dev/null; then
+      echo "Port 0 must be rejected." >&2
+      exit 1
+    fi
+    if validate_alarm_target "172.31.56.245" "65536" 2>/dev/null; then
+      echo "Port 65536 must be rejected." >&2
+      exit 1
+    fi
+    if validate_alarm_target "172.31.56.245" "8080 70000" 2>/dev/null; then
+      echo "An out-of-range port in the list must be rejected." >&2
+      exit 1
+    fi
+  )
+}
+
 test_upload_idempotency
 test_dump_space_calculation
 test_validate_requires_schema
@@ -713,4 +752,5 @@ test_backup_alarm_skipped_without_configuration
 test_backup_alarm_detail_escaping
 test_unexpected_failure_alarm_is_sent_once
 test_binlog_delay_alarm_threshold
+test_alarm_target_validation
 echo "All MySQL backup tests passed."

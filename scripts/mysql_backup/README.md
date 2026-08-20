@@ -48,15 +48,33 @@ DB EC2 (private subnet, 인터넷 경로 없음)
 | `DUMP_FAILED` | 여유 공간 부족, mysqldump 실패, 복구 기준점 누락, dump 업로드 실패 |
 | `BINLOG_UPLOAD_FAILED` | binlog 회전 실패, binlog 업로드 실패 |
 | `BINLOG_GAP_DETECTED` | binlog 번호 불연속, 번호 역행, 닫힌 파일 누락 |
-| `BINLOG_UPLOAD_DELAYED` | 마지막 성공 업로드가 5분을 초과 |
+| `BINLOG_UPLOAD_DELAYED` | 마지막 성공 업로드가 900초(타이머 3주기)를 초과 |
+
+`BINLOG_UPLOAD_DELAYED`의 임계값을 타이머 주기와 같은 300초로 두면 정상 동작 중에도 경계에서 매번 지연으로 판정되므로 3주기인 900초를 사용합니다. 판정은 binlog 작업이 실행되는 시점에 이루어지므로 실제 알림은 다음 실행에서 발생할 수 있습니다.
 
 `BINLOG_UPLOAD_DELAYED`는 스크립트가 실행되고 있을 때만 감지할 수 있습니다. EC2나 타이머 자체가 멈춘 경우는 감지할 수 없으므로 S3의 마지막 객체 시각을 외부에서 관찰하는 모니터링이 별도로 필요합니다.
 
 ### 알림 인증 토큰
 
-호출자 인증 토큰은 `config/secrets/prod_db.tfvars`의 `mysql_backup_fail_alarm_request_token`을 단일 원천으로 사용합니다. 배포 워크플로우가 secrets submodule에서 값을 읽어 DB EC2의 `/etc/solid-connection/mysql-backup.env`에 기록하므로, 토큰을 변경할 때 Terraform apply 없이 배포 워크플로우만 다시 실행하면 됩니다.
+호출자 인증 토큰은 두 곳에서 읽습니다. 각 구성 요소가 자기 설정 체계를 따르므로 값 자체는 두 곳에 존재합니다.
 
-> API 서버는 같은 토큰을 Parameter Store의 `/solid-connection/{env}/internal-alarm.token`에서 읽습니다. 토큰을 회전할 때 두 곳을 함께 변경해야 하며, 한쪽만 변경하면 모든 알림이 401로 거부됩니다.
+| 사용처 | 위치 |
+|--------|------|
+| DB EC2의 백업 스크립트 | `config/secrets/prod_db.tfvars`의 `mysql_backup_fail_alarm_request_token` |
+| API 서버 | Parameter Store의 `/solid-connection/{env}/internal-alarm.token` |
+
+배포 워크플로우가 secrets submodule에서 값을 읽어 DB EC2의 `/etc/solid-connection/mysql-backup.env`에 기록하므로, 스크립트 쪽 값을 바꿀 때 Terraform apply는 필요하지 않습니다.
+
+### 토큰 회전 절차
+
+두 곳의 값이 어긋나면 모든 알림이 401로 거부되므로 다음 순서를 지킵니다.
+
+1. Parameter Store의 `/solid-connection/{env}/internal-alarm.token`을 새 값으로 변경합니다.
+2. API 서버를 재배포해 새 토큰을 읽게 합니다.
+3. `config/secrets/prod_db.tfvars`의 `mysql_backup_fail_alarm_request_token`을 같은 값으로 변경하고 커밋합니다.
+4. `MySQL Backup Deploy` 워크플로우를 `install`로 실행해 DB EC2의 환경 파일을 갱신합니다.
+
+1번과 2번 사이에는 API 서버가 이전 토큰을 사용하므로 알림이 거부됩니다. 백업 자체는 계속 동작하며, 회전은 백업 실패가 없는 시점에 수행합니다.
 
 ## dump 실패 처리
 

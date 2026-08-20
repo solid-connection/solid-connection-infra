@@ -229,10 +229,16 @@ jobs:
               --instance-id "$DB_INSTANCE_ID" \
               --instance-os-user ubuntu \
               --ssh-public-key "file://$KEY_DIR/id_ed25519.pub" >/dev/null
-            REMOTE_VALIDATE_COMMAND="env MYSQL_BACKUP_BUCKET=$(printf '%q' "$MYSQL_BACKUP_BUCKET") MYSQL_DATABASE=$(printf '%q' "$MYSQL_DATABASE") AWS_REGION=$(printf '%q' "$AWS_REGION") ALARM_API_HOST=$(printf '%q' "$ALARM_API_HOST") ALARM_API_PORTS=$(printf '%q' "$ALARM_API_PORTS") ALARM_API_TOKEN=$(printf '%q' "$ALARM_API_TOKEN") bash -s"
-            ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 \
-              "sudo bash -c $(printf '%q' "$REMOTE_VALIDATE_COMMAND")" \
-              < scripts/mysql_backup/validate-remote.sh
+            # 토큰이 원격 프로세스 인자와 sudo 감사 로그에 남지 않도록 표준 입력으로만 전달한다.
+            {
+              printf 'export MYSQL_BACKUP_BUCKET=%q\n' "$MYSQL_BACKUP_BUCKET"
+              printf 'export MYSQL_DATABASE=%q\n' "$MYSQL_DATABASE"
+              printf 'export AWS_REGION=%q\n' "$AWS_REGION"
+              printf 'export ALARM_API_HOST=%q\n' "$ALARM_API_HOST"
+              printf 'export ALARM_API_PORTS=%q\n' "$ALARM_API_PORTS"
+              printf 'export ALARM_API_TOKEN=%q\n' "$ALARM_API_TOKEN"
+              cat scripts/mysql_backup/validate-remote.sh
+            } | ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 "sudo bash -s"
             exit 0
           fi
 

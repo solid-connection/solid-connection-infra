@@ -5,13 +5,13 @@ readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-
 # shellcheck source=../lib/backup-common.sh
 source "$LIB_DIR/backup-common.sh"
 
+# 사전 조건 검사 실패도 알리도록 소싱 직후에 등록합니다.
+trap 'alarm_on_unexpected_failure DUMP_FAILED' EXIT
+
 require_backup_environment
 require_commands aws curl docker flock gzip sha256sum
 
 readonly MAX_DUMP_JOB_AGE_SECONDS=21600
-
-# 명시적으로 처리하지 않은 실패도 알리도록 등록합니다.
-trap 'alarm_on_unexpected_failure DUMP_FAILED' EXIT
 
 exec 9>"$STATE_DIR/dump.lock"
 if ! flock -n 9; then
