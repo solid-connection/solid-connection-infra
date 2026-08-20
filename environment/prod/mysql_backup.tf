@@ -58,6 +58,9 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "mysql_backup" {
   bucket = aws_s3_bucket.mysql_backup.id
 
   rule {
+    # 백업은 SSE-S3로 고정합니다. 선언하지 않으면 apply 시 SSE-C 차단이 해제됩니다.
+    blocked_encryption_types = ["SSE-C"]
+
     apply_server_side_encryption_by_default {
       sse_algorithm = "AES256"
     }
