@@ -30,6 +30,9 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: prod-db
     runs-on: ubuntu-latest
+    # 설치는 진행 중인 백업 작업을 기다려도 수 분이면 끝납니다.
+    # 기본값 6시간을 그대로 두면 터널이 끊긴 채로 오래 매달릴 수 있어 짧게 제한합니다.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -230,6 +233,10 @@ jobs:
             -o StrictHostKeyChecking=yes
             -o UserKnownHostsFile="$KNOWN_HOSTS_FILE"
             -o ConnectTimeout=10
+            # 설치가 진행 중인 백업 작업을 기다리는 동안에는 트래픽이 없습니다.
+            # SSM 세션이 유휴로 끊기지 않도록 주기적으로 keepalive 를 보냅니다.
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=6
           )
 
           if [[ "$DEPLOY_MODE" == "validate" ]]; then

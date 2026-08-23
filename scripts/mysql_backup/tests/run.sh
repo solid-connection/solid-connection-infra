@@ -150,6 +150,7 @@ flock() { return 0; }
 curl() { return 0; }
 instance_id() { printf '%s' 'i-test'; }
 alarm_sent=false
+alarm_handled=false
 send_backup_alarm() {
   if [[ -n "${TEST_ALARM_LOG:-}" ]]; then
     printf '%s\n' "$1" >>"$TEST_ALARM_LOG"
@@ -160,11 +161,12 @@ send_backup_alarm() {
 fail_with_alarm() {
   echo "$2" >&2
   send_backup_alarm "$1" "$2"
+  alarm_handled=true
   exit 1
 }
 alarm_on_unexpected_failure() {
   local exit_code=$?
-  if ((exit_code != 0)) && [[ "$alarm_sent" != "true" ]]; then
+  if ((exit_code != 0)) && [[ "$alarm_handled" != "true" ]]; then
     send_backup_alarm "$1" "unexpected failure with exit code $exit_code"
   fi
   return 0
@@ -630,30 +632,62 @@ test_backup_alarm_detail_escaping() {
   )
 }
 
+# 명시적으로 알린 실패를 EXIT 트랩이 기본 유형으로 다시 보내지 않는지 본다.
+# 전송에 실패한 경우까지 확인한다. 이때 재전송이 일어나면 유형과 원인이 함께 뒤바뀐다.
 test_unexpected_failure_alarm_is_sent_once() {
-  (
-    export MYSQL_BACKUP_BUCKET="test-bucket"
-    export MYSQL_DATABASE="test_database"
-    export AWS_REGION="ap-northeast-2"
-    export ALARM_API_HOST="172.31.0.10"
-    export ALARM_API_PORTS="8080"
-    export ALARM_API_TOKEN="test-token"
-    # shellcheck source=../lib/backup-common.sh
-    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+  local run_case
+  run_case() {
+    local delivery_succeeds="$1"
+    local send_log="$2"
+    (
+      export MYSQL_BACKUP_BUCKET="test-bucket"
+      export MYSQL_DATABASE="test_database"
+      export AWS_REGION="ap-northeast-2"
+      export ALARM_API_HOST="172.31.0.10"
+      export ALARM_API_PORTS="8080 9080"
+      export ALARM_API_TOKEN="test-token"
+      # shellcheck source=../lib/backup-common.sh
+      source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
 
-    local send_log="$TEST_ROOT/alarm-send-count"
-    : >"$send_log"
-    instance_id() { printf '%s' 'i-test'; }
-    curl() { echo "sent" >>"$send_log"; return 0; }
+      instance_id() { printf '%s' 'i-test'; }
+      # 실제 스크립트와 같은 순서로 트랩을 걸어 기본 유형이 덮어쓰는지 확인한다.
+      trap 'alarm_on_unexpected_failure BINLOG_UPLOAD_FAILED' EXIT
+      curl() {
+        local argument
+        for argument in "$@"; do
+          case "$argument" in
+            *"$ALARM_PATH")
+              printf '%s\n' "$SEND_LOG_TYPE" >>"$SEND_LOG"
+              ;;
+          esac
+        done
+        [[ "$DELIVERY_SUCCEEDS" == "true" ]]
+      }
 
-    # 이미 알린 실패에는 종료 시점 알림을 중복해서 보내지 않는다.
-    send_backup_alarm DUMP_FAILED "explicit failure" >/dev/null
-    ( exit 1 ) || alarm_on_unexpected_failure DUMP_FAILED
-    assert_equals \
-      "1" \
-      "$(wc -l <"$send_log" | tr -d ' ')" \
-      "an already reported failure must not be alarmed twice"
-  )
+      DELIVERY_SUCCEEDS="$delivery_succeeds" SEND_LOG="$send_log" \
+        SEND_LOG_TYPE="attempt" \
+        fail_with_alarm BINLOG_GAP_DETECTED "binlog chain is broken" 2>/dev/null
+    )
+  }
+
+  # 전송에 성공하면 한 번만 시도한다.
+  local delivered_log="$TEST_ROOT/alarm-send-delivered"
+  : >"$delivered_log"
+  run_case true "$delivered_log" || true
+  assert_equals \
+    "1" \
+    "$(wc -l <"$delivered_log" | tr -d ' ')" \
+    "an already reported failure must not be alarmed twice"
+
+  # 전송에 실패해도 트랩이 기본 유형으로 다시 보내지 않는다.
+  # 포트 두 개를 모두 시도하므로 시도 횟수는 2회이고, 3회 이상이면 트랩이 재전송한 것이다.
+  local failed_log="$TEST_ROOT/alarm-send-failed"
+  : >"$failed_log"
+  run_case false "$failed_log" || true
+  assert_equals \
+    "2" \
+    "$(wc -l <"$failed_log" | tr -d ' ')" \
+    "an undelivered explicit alarm must not be resent with the default type"
 }
 
 test_binlog_delay_alarm_threshold() {
@@ -691,7 +725,7 @@ test_binlog_delay_alarm_threshold() {
       "an upload delayed beyond three cycles must be alarmed"
     assert_equals \
       "false" \
-      "$alarm_sent" \
+      "$alarm_handled" \
       "a delay alarm must not suppress the alarm for an actual failure in the same run"
 
     # 마지막 성공 기록이 없으면 판단하지 않는다.
