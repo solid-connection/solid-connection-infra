@@ -83,8 +83,8 @@ require_commands() { :; }
 mountpoint() { :; }
 docker() { :; }
 aws() { :; }
-# 알림 경로의 tcp 확인을 통과시킨다
-timeout() { return 0; }
+# 알림 경로 검증은 별도 테스트에서 다루므로 여기서는 통과시킨다
+verify_alarm_endpoint() { :; }
 require_dump_staging_space() { printf '%s\n' '1024 9999999999 268437504'; }
 mysql_query() {
   if [[ "$1" == *'@@log_bin'* ]]; then
@@ -107,6 +107,7 @@ EOF
   AWS_REGION="ap-northeast-2" \
   ALARM_API_HOST="172.31.0.10" \
   ALARM_API_PORTS="8080 9080" \
+  ALARM_API_HEALTH_PORTS="8081 9081" \
   ALARM_API_TOKEN="test-token" \
   MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
     bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null
@@ -118,6 +119,7 @@ EOF
     AWS_REGION="ap-northeast-2" \
     ALARM_API_HOST="172.31.0.10" \
     ALARM_API_PORTS="8080 9080" \
+    ALARM_API_HEALTH_PORTS="8081 9081" \
     ALARM_API_TOKEN="test-token" \
     MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
       bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null 2>&1; then
@@ -700,6 +702,65 @@ test_binlog_delay_alarm_threshold() {
   )
 }
 
+# 설치 검증이 tcp 연결이 아니라 health 응답과 401 응답을 확인하는지 본다.
+test_verify_alarm_endpoint() {
+  local run_case
+  run_case() {
+    local health_ok="$1"
+    local alarm_status="$2"
+    (
+      export MYSQL_BACKUP_BUCKET="test-bucket"
+      export MYSQL_DATABASE="test_database"
+      export AWS_REGION="ap-northeast-2"
+      # shellcheck source=../lib/backup-common.sh
+      source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+      export ALARM_API_HOST="172.31.0.10"
+      export ALARM_API_PORTS="8080 9080"
+      export ALARM_API_HEALTH_PORTS="8081 9081"
+
+      # health 는 본문을, 알림 경로는 상태 코드를 돌려주도록 흉내낸다.
+      curl() {
+        local argument
+        for argument in "$@"; do
+          case "$argument" in
+            *"/actuator/health")
+              if [[ "$FAKE_HEALTH_OK" == "true" ]]; then
+                printf '%s\n' '{"status":"UP"}'
+                return 0
+              fi
+              return 22
+              ;;
+            *"/internal/alarms/db-backup")
+              printf '%s' "$FAKE_ALARM_STATUS"
+              return 0
+              ;;
+          esac
+        done
+        return 0
+      }
+
+      FAKE_HEALTH_OK="$health_ok" FAKE_ALARM_STATUS="$alarm_status" \
+        verify_alarm_endpoint >/dev/null 2>&1
+    )
+  }
+
+  if ! run_case true 401; then
+    echo "A healthy api server that rejects an invalid token must pass verification." >&2
+    exit 1
+  fi
+  # 애플리케이션이 기동하지 않았다면 tcp 가 열려 있어도 통과하면 안 된다.
+  if run_case false 401; then
+    echo "Verification must fail when no management port reports UP." >&2
+    exit 1
+  fi
+  # 경로가 배포되지 않아 404 가 오면 통과하면 안 된다.
+  if run_case true 404; then
+    echo "Verification must fail when the alarm endpoint is not deployed." >&2
+    exit 1
+  fi
+}
+
 test_alarm_target_validation() {
   (
     export MYSQL_BACKUP_BUCKET="test-bucket"
@@ -753,4 +814,5 @@ test_backup_alarm_detail_escaping
 test_unexpected_failure_alarm_is_sent_once
 test_binlog_delay_alarm_threshold
 test_alarm_target_validation
+test_verify_alarm_endpoint
 echo "All MySQL backup tests passed."

@@ -186,8 +186,17 @@ jobs:
             echo "::error::Prod API EC2 private IP was not found"
             exit 1
           fi
-          # Blue/Green 활성 슬롯을 알 수 없으므로 두 슬롯의 app 포트를 순서대로 시도한다.
-          ALARM_API_PORTS="8080 9080"
+          # 포트도 tfvars 를 단일 원천으로 두고 읽는다. Blue/Green 활성 슬롯을 알 수 없어 두 슬롯을 모두 시도한다.
+          ALARM_API_PORTS="$(sed -n 's/^[[:space:]]*internal_alarm_api_ports[[:space:]]*=[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' "$ALARM_TFVARS_PATH" | tr -d ' ' | tr ',' ' ')"
+          ALARM_API_HEALTH_PORTS="$(sed -n 's/^[[:space:]]*internal_alarm_api_management_ports[[:space:]]*=[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' "$ALARM_TFVARS_PATH" | tr -d ' ' | tr ',' ' ')"
+          if [[ -z "$ALARM_API_PORTS" ]]; then
+            echo "::error::internal_alarm_api_ports is missing in $ALARM_TFVARS_PATH"
+            exit 1
+          fi
+          if [[ -z "$ALARM_API_HEALTH_PORTS" ]]; then
+            echo "::error::internal_alarm_api_management_ports is missing in $ALARM_TFVARS_PATH"
+            exit 1
+          fi
 
           aws ssm start-session \
             --target "$API_INSTANCE_ID" \
@@ -236,6 +245,7 @@ jobs:
               printf 'export AWS_REGION=%q\n' "$AWS_REGION"
               printf 'export ALARM_API_HOST=%q\n' "$ALARM_API_HOST"
               printf 'export ALARM_API_PORTS=%q\n' "$ALARM_API_PORTS"
+              printf 'export ALARM_API_HEALTH_PORTS=%q\n' "$ALARM_API_HEALTH_PORTS"
               printf 'export ALARM_API_TOKEN=%q\n' "$ALARM_API_TOKEN"
               cat scripts/mysql_backup/validate-remote.sh
             } | ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 "sudo bash -s"
@@ -249,6 +259,7 @@ jobs:
             printf 'AWS_REGION=%s\n' "$AWS_REGION"
             printf 'ALARM_API_HOST=%s\n' "$ALARM_API_HOST"
             printf 'ALARM_API_PORTS=%s\n' "$ALARM_API_PORTS"
+            printf 'ALARM_API_HEALTH_PORTS=%s\n' "$ALARM_API_HEALTH_PORTS"
             printf 'ALARM_API_TOKEN=%s\n' "$ALARM_API_TOKEN"
           } >"$CONFIG_FILE"
 

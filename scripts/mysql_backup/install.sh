@@ -66,7 +66,7 @@ load_candidate_config() {
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_TOKEN)
+      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_HEALTH_PORTS|ALARM_API_TOKEN)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;

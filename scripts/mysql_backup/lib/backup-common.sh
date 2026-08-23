@@ -141,9 +141,11 @@ upload_file_once() {
 require_alarm_environment() {
   : "${ALARM_API_HOST:?ALARM_API_HOST is required}"
   : "${ALARM_API_PORTS:?ALARM_API_PORTS is required}"
+  : "${ALARM_API_HEALTH_PORTS:?ALARM_API_HEALTH_PORTS is required}"
   : "${ALARM_API_TOKEN:?ALARM_API_TOKEN is required}"
 
   validate_alarm_target "$ALARM_API_HOST" "$ALARM_API_PORTS"
+  validate_alarm_target "$ALARM_API_HOST" "$ALARM_API_HEALTH_PORTS"
 }
 
 # 8진수로 해석되지 않도록 10# 을 붙여 비교합니다.
@@ -292,5 +294,52 @@ alarm_if_upload_delayed() {
       "the last successful binlog upload was $elapsed_seconds seconds ago"
     # 지연은 실패가 아니므로, 이번 실행이 실제로 실패하면 다시 알릴 수 있도록 되돌립니다.
     alarm_sent=false
+  fi
+}
+
+# 알림 경로가 실제로 동작하는지 확인합니다.
+# - management 포트의 health 로 api 서버가 기동했는지 확인합니다. tcp 연결만으로는 앱 기동 여부를 알 수 없습니다.
+# - 잘못된 토큰으로 알림 경로를 호출해 401 이 오는지 확인합니다. 경로가 배포되지 않았다면 404 가 옵니다.
+# - 토큰 값이 실제로 맞는지는 알림을 발생시키지 않고 확인할 수 없어 검증 대상에서 제외합니다.
+verify_alarm_endpoint() {
+  local port
+  local health_response
+  local status
+  local is_healthy=false
+  local is_endpoint_deployed=false
+
+  for port in ${ALARM_API_HEALTH_PORTS}; do
+    health_response="$(curl -fsS --max-time 3 "http://${ALARM_API_HOST}:${port}/actuator/health" 2>/dev/null)" || health_response=""
+    case "$health_response" in
+      *'"status":"UP"'*)
+        is_healthy=true
+        echo "Api server is healthy on management port $port."
+        break
+        ;;
+    esac
+  done
+  if [[ "$is_healthy" != "true" ]]; then
+    echo "No api server responded as UP on the management ports: $ALARM_API_HEALTH_PORTS" >&2
+    echo "Check whether the api server is running and whether the management port convention has changed." >&2
+    return 1
+  fi
+
+  for port in ${ALARM_API_PORTS}; do
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+      -X POST "http://${ALARM_API_HOST}:${port}${ALARM_PATH}" \
+      -H "Content-Type: application/json" \
+      -H "X-Internal-Alarm-Token: invalid-token-for-validation" \
+      -d '{"type":"DUMP_FAILED","instanceId":"validation","occurredAt":"2026-01-01T00:00:00Z"}' 2>/dev/null)" \
+      || status="000"
+    if [[ "$status" == "401" ]]; then
+      is_endpoint_deployed=true
+      echo "Alarm endpoint is deployed on app port $port."
+      break
+    fi
+  done
+  if [[ "$is_endpoint_deployed" != "true" ]]; then
+    echo "The alarm endpoint did not reject an invalid token on any app port: $ALARM_API_PORTS" >&2
+    echo "The endpoint may not be deployed on the running api server yet." >&2
+    return 1
   fi
 }

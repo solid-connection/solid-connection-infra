@@ -10,11 +10,11 @@ if ((EUID != 0)); then
 fi
 
 if [[ -x "$VALIDATE_BIN" && -f "$CONFIG_FILE" ]]; then
-  unset MYSQL_BACKUP_BUCKET MYSQL_DATABASE AWS_REGION ALARM_API_HOST ALARM_API_PORTS ALARM_API_TOKEN
+  unset MYSQL_BACKUP_BUCKET MYSQL_DATABASE AWS_REGION ALARM_API_HOST ALARM_API_PORTS ALARM_API_HEALTH_PORTS ALARM_API_TOKEN
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_TOKEN)
+      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_HEALTH_PORTS|ALARM_API_TOKEN)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -24,6 +24,12 @@ if [[ -x "$VALIDATE_BIN" && -f "$CONFIG_FILE" ]]; then
         ;;
     esac
   done <"$CONFIG_FILE"
+  # 이 경로는 설치된 값 그대로 검증하므로, 새 항목이 추가된 뒤 재설치하지 않은 환경을 구분해 알려줍니다.
+  if [[ -z "${ALARM_API_HEALTH_PORTS:-}" ]]; then
+    echo "ALARM_API_HEALTH_PORTS is missing in $CONFIG_FILE." >&2
+    echo "Run the deploy workflow with the install action to refresh the environment file." >&2
+    exit 1
+  fi
   "$VALIDATE_BIN"
   systemctl is-enabled --quiet mysql-backup-binlog.timer mysql-backup-dump.timer
   systemctl is-active --quiet mysql-backup-binlog.timer mysql-backup-dump.timer
@@ -31,7 +37,7 @@ if [[ -x "$VALIDATE_BIN" && -f "$CONFIG_FILE" ]]; then
   exit 0
 fi
 
-for command_name in aws curl docker flock gzip sha256sum timeout; do
+for command_name in aws curl docker flock gzip sha256sum; do
   command -v "$command_name" >/dev/null || {
     echo "Required command is not installed: $command_name" >&2
     exit 1
@@ -42,6 +48,7 @@ done
 : "${AWS_REGION:?AWS_REGION is required for pre-installation validation}"
 : "${ALARM_API_HOST:?ALARM_API_HOST is required for pre-installation validation}"
 : "${ALARM_API_PORTS:?ALARM_API_PORTS is required for pre-installation validation}"
+: "${ALARM_API_HEALTH_PORTS:?ALARM_API_HEALTH_PORTS is required for pre-installation validation}"
 : "${ALARM_API_TOKEN:?ALARM_API_TOKEN is required for pre-installation validation}"
 # 설치 전에는 공용 라이브러리가 없으므로 같은 범위 검증을 여기에 둡니다.
 # 8진수로 해석되지 않도록 10# 을 붙여 비교합니다.
@@ -55,15 +62,17 @@ for alarm_host_octet in ${ALARM_API_HOST//./ }; do
     exit 1
   fi
 done
-if [[ ! "$ALARM_API_PORTS" =~ ^[0-9]+( [0-9]+)*$ ]]; then
-  echo "Invalid alarm api ports: $ALARM_API_PORTS" >&2
-  exit 1
-fi
-for alarm_port in $ALARM_API_PORTS; do
-  if ((10#$alarm_port < 1 || 10#$alarm_port > 65535)); then
-    echo "Invalid alarm api ports: $ALARM_API_PORTS" >&2
+for alarm_port_list in "$ALARM_API_PORTS" "$ALARM_API_HEALTH_PORTS"; do
+  if [[ ! "$alarm_port_list" =~ ^[0-9]+( [0-9]+)*$ ]]; then
+    echo "Invalid alarm api ports: $alarm_port_list" >&2
     exit 1
   fi
+  for alarm_port in $alarm_port_list; do
+    if ((10#$alarm_port < 1 || 10#$alarm_port > 65535)); then
+      echo "Invalid alarm api ports: $alarm_port_list" >&2
+      exit 1
+    fi
+  done
 done
 if [[ ! "$MYSQL_BACKUP_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]]; then
   echo "Invalid S3 bucket name." >&2
@@ -112,17 +121,43 @@ if ((available_bytes < required_bytes)); then
 fi
 aws s3api head-bucket --bucket "$MYSQL_BACKUP_BUCKET" --region "$AWS_REGION" >/dev/null
 
-# 비활성 슬롯은 내려가 있으므로 설정된 포트 중 하나라도 열려 있으면 통과합니다.
-alarm_endpoint_reachable=false
+# 설치 전에는 공용 라이브러리가 없으므로 lib/backup-common.sh 의 verify_alarm_endpoint 와 같은 검증을 여기에 둡니다.
+# 알림 경로와 판정 기준을 바꿀 때는 두 곳을 함께 고쳐야 합니다.
+# 비활성 슬롯은 내려가 있으므로 설정된 포트 중 하나라도 응답하면 통과합니다.
+alarm_api_healthy=false
+for alarm_health_port in ${ALARM_API_HEALTH_PORTS}; do
+  alarm_health_response="$(curl -fsS --max-time 3 "http://${ALARM_API_HOST}:${alarm_health_port}/actuator/health" 2>/dev/null)" || alarm_health_response=""
+  case "$alarm_health_response" in
+    *'"status":"UP"'*)
+      alarm_api_healthy=true
+      echo "Api server is healthy on management port $alarm_health_port."
+      break
+      ;;
+  esac
+done
+if [[ "$alarm_api_healthy" != "true" ]]; then
+  echo "No api server responded as UP on the management ports: $ALARM_API_HEALTH_PORTS" >&2
+  echo "Check whether the api server is running and whether the management port convention has changed." >&2
+  exit 1
+fi
+
+alarm_endpoint_deployed=false
 for alarm_port in ${ALARM_API_PORTS}; do
-  if timeout 3 bash -c "exec 3<>/dev/tcp/${ALARM_API_HOST}/${alarm_port}" 2>/dev/null; then
-    alarm_endpoint_reachable=true
-    echo "Alarm api is reachable on port $alarm_port."
+  alarm_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+    -X POST "http://${ALARM_API_HOST}:${alarm_port}/internal/alarms/db-backup" \
+    -H "Content-Type: application/json" \
+    -H "X-Internal-Alarm-Token: invalid-token-for-validation" \
+    -d '{"type":"DUMP_FAILED","instanceId":"validation","occurredAt":"2026-01-01T00:00:00Z"}' 2>/dev/null)" \
+    || alarm_status="000"
+  if [[ "$alarm_status" == "401" ]]; then
+    alarm_endpoint_deployed=true
+    echo "Alarm endpoint is deployed on app port $alarm_port."
     break
   fi
 done
-if [[ "$alarm_endpoint_reachable" != "true" ]]; then
-  echo "Alarm api is not reachable on any of the configured ports: $ALARM_API_PORTS" >&2
+if [[ "$alarm_endpoint_deployed" != "true" ]]; then
+  echo "The alarm endpoint did not reject an invalid token on any app port: $ALARM_API_PORTS" >&2
+  echo "The endpoint may not be deployed on the running api server yet." >&2
   exit 1
 fi
 
