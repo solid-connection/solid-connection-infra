@@ -13,9 +13,14 @@ readonly INSTALL_LOCK_FILE="/run/lock/solid-connection-mysql-backup-install.lock
 # binlog는 최대 4분, dump는 최대 2시간 실행되므로, dump가 도는 중이라면
 # 기다리기보다 중단하고 다른 시각에 다시 실행하는 편이 낫습니다.
 readonly LOCK_WAIT_SECONDS=300
+readonly BINLOG_TIMER_UNIT="mysql-backup-binlog.timer"
+readonly DUMP_TIMER_UNIT="mysql-backup-dump.timer"
+readonly DUMP_SERVICE_UNIT="mysql-backup-dump.service"
+# systemd 는 Persistent 타이머의 마지막 트리거 시각을 이 파일의 mtime 으로 기록합니다.
+readonly DUMP_TIMER_STAMP_FILE="/var/lib/systemd/timers/stamp-$DUMP_TIMER_UNIT"
 readonly -a TIMER_UNITS=(
-  mysql-backup-binlog.timer
-  mysql-backup-dump.timer
+  "$BINLOG_TIMER_UNIT"
+  "$DUMP_TIMER_UNIT"
 )
 
 if ((EUID != 0)); then
@@ -98,6 +103,8 @@ declare -A TIMER_WAS_ENABLED=()
 declare -A TIMER_WAS_ACTIVE=()
 transaction_started=false
 transaction_committed=false
+# 타이머를 켜면 systemd 가 stamp 파일을 만들 수 있어, 켜기 전에 확인해 둡니다.
+dump_was_triggered=false
 
 register_target() {
   local target="$1"
@@ -191,6 +198,10 @@ for timer in "${TIMER_UNITS[@]}"; do
   register_target "/etc/systemd/system/timers.target.wants/$timer"
 done
 
+if [[ -e "$DUMP_TIMER_STAMP_FILE" ]]; then
+  dump_was_triggered=true
+fi
+
 register_target "$INSTALL_LIB_DIR/backup-common.sh"
 for script in "$CANDIDATE_DIR"/bin/*; do
   register_target "$INSTALL_BIN_DIR/$(basename "$script")"
@@ -248,5 +259,20 @@ release_backup_locks
 
 systemctl enable --now "${TIMER_UNITS[@]}"
 transaction_committed=true
+
+# Persistent 는 마지막 트리거 기록이 있어야 놓친 발화를 따라잡습니다.
+# 기록이 없는 최초 설치에서는 다음 03:00 까지 dump 가 생기지 않는데,
+# 기준점이 되는 dump 가 없으면 binlog 만으로는 재생 시작점이 없어 복구할 수 없습니다.
+# 그래서 첫 dump 는 스케줄을 기다리지 않고 바로 만듭니다.
+# 이미 dump 기록이 있으면 유효한 기준점이 있으므로 설치가 스케줄에 개입하지 않습니다.
+if [[ "$dump_was_triggered" != "true" ]]; then
+  echo "No previous dump was recorded; creating the first dump now so that binlogs have a recovery base."
+  # dump 는 최대 2시간까지 실행될 수 있어 완료를 기다리지 않습니다.
+  # 설치는 이미 커밋되었으므로, 트리거가 실패해도 설치를 실패로 만들지 않고 사실만 알립니다.
+  if ! systemctl start --no-block "$DUMP_SERVICE_UNIT"; then
+    echo "Failed to start the first dump. Until it succeeds there is no recovery base," >&2
+    echo "so run it manually or wait for the next scheduled run at 03:00 KST." >&2
+  fi
+fi
 
 systemctl --no-pager --full status "${TIMER_UNITS[@]}"
