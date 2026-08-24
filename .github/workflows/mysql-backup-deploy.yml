@@ -30,10 +30,15 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: prod-db
     runs-on: ubuntu-latest
+    # 설치는 진행 중인 백업 작업을 기다려도 수 분이면 끝납니다.
+    # 기본값 6시간을 그대로 두면 터널이 끊긴 채로 오래 매달릴 수 있어 짧게 제한합니다.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
 
       - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
@@ -92,16 +97,29 @@ jobs:
       - name: Validate or install MySQL backup
         env:
           DEPLOY_MODE: ${{ inputs.mode }}
-          MYSQL_BACKUP_BUCKET: ${{ vars.MYSQL_BACKUP_BUCKET_NAME }}
-          MYSQL_DATABASE: ${{ vars.MYSQL_BACKUP_DATABASE_NAME }}
-          DB_HOST_FINGERPRINT: ${{ vars.PROD_DB_SSH_HOST_KEY_ED25519 }}
+          MYSQL_BACKUP_BUCKET: ${{ secrets.MYSQL_BACKUP_BUCKET_NAME }}
+          MYSQL_DATABASE: ${{ secrets.MYSQL_BACKUP_DATABASE_NAME }}
+          DB_HOST_FINGERPRINT: ${{ secrets.PROD_DB_SSH_HOST_KEY_ED25519 }}
+          ALARM_TFVARS_PATH: config/secrets/prod_db.tfvars
         run: |
           set -Eeuo pipefail
           umask 077
 
-          : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET_NAME repository variable is required}"
-          : "${MYSQL_DATABASE:?MYSQL_BACKUP_DATABASE_NAME repository variable is required}"
-          : "${DB_HOST_FINGERPRINT:?PROD_DB_SSH_HOST_KEY_ED25519 repository variable is required}"
+          : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET_NAME repository secret is required}"
+          : "${MYSQL_DATABASE:?MYSQL_BACKUP_DATABASE_NAME repository secret is required}"
+          : "${DB_HOST_FINGERPRINT:?PROD_DB_SSH_HOST_KEY_ED25519 repository secret is required}"
+
+          # 알림 토큰은 tfvars 를 단일 원천으로 두므로 secrets submodule 에서 읽는다.
+          if [[ ! -f "$ALARM_TFVARS_PATH" ]]; then
+            echo "::error::$ALARM_TFVARS_PATH is missing; check the secrets submodule checkout"
+            exit 1
+          fi
+          ALARM_API_TOKEN="$(sed -n 's/^[[:space:]]*mysql_backup_fail_alarm_request_token[[:space:]]*=[[:space:]]*"\(.*\)"[[:space:]]*$/\1/p' "$ALARM_TFVARS_PATH" | head -1)"
+          if [[ -z "$ALARM_API_TOKEN" ]]; then
+            echo "::error::mysql_backup_fail_alarm_request_token is missing in $ALARM_TFVARS_PATH"
+            exit 1
+          fi
+          echo "::add-mask::$ALARM_API_TOKEN"
           if [[ "$DEPLOY_MODE" != "validate" && "$DEPLOY_MODE" != "install" ]]; then
             echo "::error::Invalid deployment mode"
             exit 1
@@ -162,6 +180,28 @@ jobs:
             exit 1
           fi
 
+          # DB EC2 는 인터넷 경로가 없어 API EC2 의 private ip 로 알림을 보낸다.
+          ALARM_API_HOST="$(aws ec2 describe-instances \
+            --instance-ids "$API_INSTANCE_ID" \
+            --query 'Reservations[0].Instances[0].PrivateIpAddress' \
+            --output text)"
+          if [[ -z "$ALARM_API_HOST" || "$ALARM_API_HOST" == "None" ]]; then
+            echo "::error::Prod API EC2 private IP was not found"
+            exit 1
+          fi
+          # 포트도 tfvars 를 단일 원천으로 두고 읽는다. Blue/Green 활성 슬롯을 알 수 없어 두 슬롯을 모두 시도한다.
+          ALARM_API_PORTS="$(sed -n 's/^[[:space:]]*internal_alarm_api_ports[[:space:]]*=[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' "$ALARM_TFVARS_PATH" | tr -d ' ' | tr ',' ' ')"
+          ALARM_API_HEALTH_PORTS="$(sed -n 's/^[[:space:]]*internal_alarm_api_management_ports[[:space:]]*=[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' "$ALARM_TFVARS_PATH" | tr -d ' ' | tr ',' ' ')"
+          # 값이 비면 변수가 없거나 목록이 여러 줄로 나뉘어 있다는 뜻이므로 두 경우를 함께 안내한다.
+          if [[ -z "$ALARM_API_PORTS" ]]; then
+            echo "::error::Could not read internal_alarm_api_ports from $ALARM_TFVARS_PATH. Declare it on a single line, for example: internal_alarm_api_ports = [8080, 9080]"
+            exit 1
+          fi
+          if [[ -z "$ALARM_API_HEALTH_PORTS" ]]; then
+            echo "::error::Could not read internal_alarm_api_management_ports from $ALARM_TFVARS_PATH. Declare it on a single line, for example: internal_alarm_api_management_ports = [8081, 9081]"
+            exit 1
+          fi
+
           aws ssm start-session \
             --target "$API_INSTANCE_ID" \
             --document-name AWS-StartPortForwardingSessionToRemoteHost \
@@ -194,6 +234,10 @@ jobs:
             -o StrictHostKeyChecking=yes
             -o UserKnownHostsFile="$KNOWN_HOSTS_FILE"
             -o ConnectTimeout=10
+            # 설치가 진행 중인 백업 작업을 기다리는 동안에는 트래픽이 없습니다.
+            # SSM 세션이 유휴로 끊기지 않도록 주기적으로 keepalive 를 보냅니다.
+            -o ServerAliveInterval=30
+            -o ServerAliveCountMax=6
           )
 
           if [[ "$DEPLOY_MODE" == "validate" ]]; then
@@ -202,10 +246,17 @@ jobs:
               --instance-id "$DB_INSTANCE_ID" \
               --instance-os-user ubuntu \
               --ssh-public-key "file://$KEY_DIR/id_ed25519.pub" >/dev/null
-            REMOTE_VALIDATE_COMMAND="env MYSQL_BACKUP_BUCKET=$(printf '%q' "$MYSQL_BACKUP_BUCKET") MYSQL_DATABASE=$(printf '%q' "$MYSQL_DATABASE") AWS_REGION=$(printf '%q' "$AWS_REGION") bash -s"
-            ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 \
-              "sudo bash -c $(printf '%q' "$REMOTE_VALIDATE_COMMAND")" \
-              < scripts/mysql_backup/validate-remote.sh
+            # 토큰이 원격 프로세스 인자와 sudo 감사 로그에 남지 않도록 표준 입력으로만 전달한다.
+            {
+              printf 'export MYSQL_BACKUP_BUCKET=%q\n' "$MYSQL_BACKUP_BUCKET"
+              printf 'export MYSQL_DATABASE=%q\n' "$MYSQL_DATABASE"
+              printf 'export AWS_REGION=%q\n' "$AWS_REGION"
+              printf 'export ALARM_API_HOST=%q\n' "$ALARM_API_HOST"
+              printf 'export ALARM_API_PORTS=%q\n' "$ALARM_API_PORTS"
+              printf 'export ALARM_API_HEALTH_PORTS=%q\n' "$ALARM_API_HEALTH_PORTS"
+              printf 'export ALARM_API_TOKEN=%q\n' "$ALARM_API_TOKEN"
+              cat scripts/mysql_backup/validate-remote.sh
+            } | ssh "${SSH_OPTIONS[@]}" ubuntu@127.0.0.1 "sudo bash -s"
             exit 0
           fi
 
@@ -214,6 +265,10 @@ jobs:
             printf 'MYSQL_BACKUP_BUCKET=%s\n' "$MYSQL_BACKUP_BUCKET"
             printf 'MYSQL_DATABASE=%s\n' "$MYSQL_DATABASE"
             printf 'AWS_REGION=%s\n' "$AWS_REGION"
+            printf 'ALARM_API_HOST=%s\n' "$ALARM_API_HOST"
+            printf 'ALARM_API_PORTS=%s\n' "$ALARM_API_PORTS"
+            printf 'ALARM_API_HEALTH_PORTS=%s\n' "$ALARM_API_HEALTH_PORTS"
+            printf 'ALARM_API_TOKEN=%s\n' "$ALARM_API_TOKEN"
           } >"$CONFIG_FILE"
 
           cp -R scripts/mysql_backup "$KEY_DIR/bundle"

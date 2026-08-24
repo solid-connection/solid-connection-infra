@@ -7,6 +7,18 @@ readonly STATE_DIR="$BACKUP_ROOT/state"
 readonly MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/mnt/mysql-data/mysql}"
 readonly MYSQL_CONTAINER="${MYSQL_CONTAINER:-mysql-server}"
 readonly DUMP_SPACE_RESERVE_BYTES=268435456
+readonly ALARM_PATH="/internal/alarms/db-backup"
+readonly ALARM_TIMEOUT_SECONDS=5
+readonly ALARM_RETRY_COUNT=2
+readonly ALARM_DETAIL_MAX_LENGTH=1000
+
+# 같은 실패로 알림이 두 번 나가지 않도록 전송 여부를 기록합니다.
+alarm_sent=false
+# 명시적으로 알리려던 실패의 유형과 원인을 보존합니다.
+# 전송이 실패하면 EXIT 트랩이 기본 유형으로 바꾸지 않고 같은 내용으로 한 번 더 시도합니다.
+# 유형이 바뀌면 실패 원인과 대응 방법이 함께 달라지고, 그대로 포기하면 그날의 알림이 사라집니다.
+failed_alarm_type=""
+failed_alarm_detail=""
 
 require_backup_environment() {
   : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET is required}"
@@ -129,4 +141,224 @@ upload_file_once() {
     --only-show-errors \
     --no-progress \
     --metadata "sha256=$checksum"
+}
+
+require_alarm_environment() {
+  : "${ALARM_API_HOST:?ALARM_API_HOST is required}"
+  : "${ALARM_API_PORTS:?ALARM_API_PORTS is required}"
+  : "${ALARM_API_HEALTH_PORTS:?ALARM_API_HEALTH_PORTS is required}"
+  : "${ALARM_API_TOKEN:?ALARM_API_TOKEN is required}"
+
+  validate_alarm_target "$ALARM_API_HOST" "$ALARM_API_PORTS"
+  validate_alarm_target "$ALARM_API_HOST" "$ALARM_API_HEALTH_PORTS"
+}
+
+# 8진수로 해석되지 않도록 10# 을 붙여 비교합니다.
+validate_alarm_target() {
+  local host="$1"
+  local ports="$2"
+  local octet
+  local port
+
+  if [[ ! "$host" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "Invalid alarm api host: $host" >&2
+    return 1
+  fi
+  for octet in ${host//./ }; do
+    if ((10#$octet > 255)); then
+      echo "Invalid alarm api host: $host" >&2
+      return 1
+    fi
+  done
+
+  if [[ ! "$ports" =~ ^[0-9]+( [0-9]+)*$ ]]; then
+    echo "Invalid alarm api ports: $ports" >&2
+    return 1
+  fi
+  for port in $ports; do
+    if ((10#$port < 1 || 10#$port > 65535)); then
+      echo "Invalid alarm api ports: $ports" >&2
+      return 1
+    fi
+  done
+}
+
+instance_id() {
+  local metadata_token
+
+  metadata_token="$(curl -fsS -X PUT "http://169.254.169.254/latest/api/token" \
+    -H "X-aws-ec2-metadata-token-ttl-seconds: 60" \
+    --max-time 2 2>/dev/null)" || return 1
+  curl -fsS -H "X-aws-ec2-metadata-token: $metadata_token" \
+    "http://169.254.169.254/latest/meta-data/instance-id" \
+    --max-time 2 2>/dev/null
+}
+
+# sed 의 N 명령은 GNU 와 BSD 동작이 달라 한 줄 입력에서 결과가 사라지므로 bash 치환만 사용합니다.
+json_escape() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\t'/ }"
+  value="${value//$'\n'/\\n}"
+  printf '%s' "$value"
+}
+
+# 활성 슬롯을 알 수 없으므로 blue, green 순서로 시도하고 먼저 응답한 쪽으로 보냅니다.
+# 알림 전송 실패가 백업 자체를 실패시키지 않도록 항상 0으로 종료합니다.
+send_backup_alarm() {
+  local alarm_type="$1"
+  local detail="$2"
+  local target_instance_id
+  local header_config
+  local payload
+  local port
+
+  if [[ -z "${ALARM_API_HOST:-}" || -z "${ALARM_API_TOKEN:-}" ]]; then
+    echo "Alarm target is not configured; skipping the backup alarm." >&2
+    return 0
+  fi
+
+  target_instance_id="$(instance_id)" || target_instance_id="unknown"
+  payload="$(printf '{"type":"%s","instanceId":"%s","occurredAt":"%s","detail":"%s"}' \
+    "$alarm_type" \
+    "$target_instance_id" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    "$(json_escape "${detail:0:ALARM_DETAIL_MAX_LENGTH}")")"
+
+  # 토큰이 프로세스 목록에 남지 않도록 헤더를 설정 파일로 전달합니다.
+  # 준비 단계가 실패해도 백업 자체는 계속되어야 하므로 항상 0 으로 돌아갑니다.
+  if ! header_config="$(mktemp 2>/dev/null)"; then
+    echo "Failed to create a temporary file for the backup alarm request." >&2
+    return 0
+  fi
+  if ! chmod 600 "$header_config" 2>/dev/null \
+    || ! printf 'header = "X-Internal-Alarm-Token: %s"\n' "$ALARM_API_TOKEN" >"$header_config" 2>/dev/null; then
+    echo "Failed to prepare the backup alarm request." >&2
+    rm -f "$header_config"
+    return 0
+  fi
+
+  for port in ${ALARM_API_PORTS}; do
+    if curl -fsS \
+      --config "$header_config" \
+      --max-time "$ALARM_TIMEOUT_SECONDS" \
+      --retry "$ALARM_RETRY_COUNT" \
+      --retry-delay 3 \
+      -X POST "http://${ALARM_API_HOST}:${port}${ALARM_PATH}" \
+      -H "Content-Type: application/json" \
+      -d "$payload" >/dev/null 2>&1; then
+      rm -f "$header_config"
+      alarm_sent=true
+      echo "Sent a backup alarm: type=$alarm_type port=$port"
+      return 0
+    fi
+  done
+
+  rm -f "$header_config"
+  echo "Failed to send a backup alarm: type=$alarm_type" >&2
+  return 0
+}
+
+fail_with_alarm() {
+  local alarm_type="$1"
+  local detail="$2"
+
+  echo "$detail" >&2
+  # 전송이 실패해도 EXIT 트랩이 같은 유형으로 재시도할 수 있도록 남겨둡니다.
+  failed_alarm_type="$alarm_type"
+  failed_alarm_detail="$detail"
+  send_backup_alarm "$alarm_type" "$detail"
+  exit 1
+}
+
+# 명시적으로 처리하지 않은 실패도 알리기 위해 스크립트 종료 시점에 한 번 더 확인합니다.
+alarm_on_unexpected_failure() {
+  local exit_code=$?
+  local default_alarm_type="$1"
+
+  if ((exit_code == 0)) || [[ "$alarm_sent" == "true" ]]; then
+    return 0
+  fi
+  if [[ -n "$failed_alarm_type" ]]; then
+    # 이미 알리려던 실패이므로 유형과 원인을 그대로 두고 한 번 더 시도합니다.
+    send_backup_alarm "$failed_alarm_type" "$failed_alarm_detail"
+  else
+    send_backup_alarm "$default_alarm_type" "unexpected failure with exit code $exit_code"
+  fi
+  return 0
+}
+
+# 스크립트는 돌고 있지만 업로드가 계속 실패해 마지막 성공이 오래된 경우를 알립니다.
+# EC2 나 타이머 자체가 멈춘 경우는 이 방식으로 감지할 수 없어 외부 모니터링이 필요합니다.
+alarm_if_upload_delayed() {
+  local success_file="$1"
+  local threshold_seconds="$2"
+  local last_success_epoch
+  local elapsed_seconds
+
+  [[ -s "$success_file" ]] || return 0
+  last_success_epoch="$(<"$success_file")"
+  [[ "$last_success_epoch" =~ ^[0-9]+$ ]] || return 0
+
+  elapsed_seconds=$(( $(date -u +%s) - last_success_epoch ))
+  if ((elapsed_seconds > threshold_seconds)); then
+    send_backup_alarm BINLOG_UPLOAD_DELAYED \
+      "the last successful binlog upload was $elapsed_seconds seconds ago"
+    # 지연은 실패가 아니므로, 이번 실행이 실제로 실패하면 다시 알릴 수 있도록 되돌립니다.
+    alarm_sent=false
+  fi
+}
+
+# 알림 경로가 실제로 동작하는지 확인합니다.
+# - management 포트의 health 로 api 서버가 기동했는지 확인합니다. tcp 연결만으로는 앱 기동 여부를 알 수 없습니다.
+# - 잘못된 토큰으로 알림 경로를 호출해 401 이 오는지 확인합니다.
+#   경로가 배포되지 않은 서버는 핸들러를 찾지 못해 정적 리소스로 처리하다 500 을 반환합니다.
+# - 토큰 값이 실제로 맞는지는 알림을 발생시키지 않고 확인할 수 없어 검증 대상에서 제외합니다.
+verify_alarm_endpoint() {
+  local port
+  local health_response
+  local status
+  local last_status="none"
+  local is_healthy=false
+  local is_endpoint_deployed=false
+
+  for port in ${ALARM_API_HEALTH_PORTS}; do
+    health_response="$(curl -fsS --max-time 3 "http://${ALARM_API_HOST}:${port}/actuator/health" 2>/dev/null)" || health_response=""
+    case "$health_response" in
+      *'"status":"UP"'*)
+        is_healthy=true
+        echo "Api server is healthy on management port $port."
+        break
+        ;;
+    esac
+  done
+  if [[ "$is_healthy" != "true" ]]; then
+    echo "No api server responded as UP on the management ports: $ALARM_API_HEALTH_PORTS" >&2
+    echo "Check whether the api server is running, whether the security group allows these ports" >&2
+    echo "from this instance, and whether the management port convention has changed." >&2
+    return 1
+  fi
+
+  for port in ${ALARM_API_PORTS}; do
+    status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
+      -X POST "http://${ALARM_API_HOST}:${port}${ALARM_PATH}" \
+      -H "Content-Type: application/json" \
+      -H "X-Internal-Alarm-Token: invalid-token-for-validation" \
+      -d '{"type":"DUMP_FAILED","instanceId":"validation","occurredAt":"2026-01-01T00:00:00Z"}' 2>/dev/null)" \
+      || status="000"
+    last_status="$status"
+    if [[ "$status" == "401" ]]; then
+      is_endpoint_deployed=true
+      echo "Alarm endpoint is deployed on app port $port."
+      break
+    fi
+  done
+  if [[ "$is_endpoint_deployed" != "true" ]]; then
+    echo "The alarm endpoint did not reject an invalid token on any app port: $ALARM_API_PORTS" >&2
+    echo "The last response status was $last_status." >&2
+    echo "A 404 or 500 means the api server in service does not have the endpoint yet; deploy it first." >&2
+    return 1
+  fi
 }

@@ -78,10 +78,13 @@ set -Eeuo pipefail
 readonly BACKUP_ROOT="$TEST_BACKUP_ROOT"
 readonly MYSQL_CONTAINER="mysql-server"
 require_backup_environment() { :; }
+require_alarm_environment() { :; }
 require_commands() { :; }
 mountpoint() { :; }
 docker() { :; }
 aws() { :; }
+# 알림 경로 검증은 별도 테스트에서 다루므로 여기서는 통과시킨다
+verify_alarm_endpoint() { :; }
 require_dump_staging_space() { printf '%s\n' '1024 9999999999 268437504'; }
 mysql_query() {
   if [[ "$1" == *'@@log_bin'* ]]; then
@@ -102,6 +105,10 @@ EOF
   MYSQL_BACKUP_BUCKET="test-bucket" \
   MYSQL_DATABASE="test_database" \
   AWS_REGION="ap-northeast-2" \
+  ALARM_API_HOST="172.31.0.10" \
+  ALARM_API_PORTS="8080 9080" \
+  ALARM_API_HEALTH_PORTS="8081 9081" \
+  ALARM_API_TOKEN="test-token" \
   MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
     bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null
 
@@ -110,6 +117,10 @@ EOF
     MYSQL_BACKUP_BUCKET="test-bucket" \
     MYSQL_DATABASE="missing_database" \
     AWS_REGION="ap-northeast-2" \
+    ALARM_API_HOST="172.31.0.10" \
+    ALARM_API_PORTS="8080 9080" \
+    ALARM_API_HEALTH_PORTS="8081 9081" \
+    ALARM_API_TOKEN="test-token" \
     MYSQL_BACKUP_LIB_DIR="$fixture_dir/lib" \
       bash "$PROJECT_DIR/scripts/mysql_backup/bin/mysql-backup-validate" >/dev/null 2>&1; then
     echo "Validation must reject a missing backup database." >&2
@@ -136,6 +147,38 @@ readonly AWS_REGION="${AWS_REGION:-ap-northeast-2}"
 require_backup_environment() { :; }
 require_commands() { :; }
 flock() { return 0; }
+curl() { return 0; }
+instance_id() { printf '%s' 'i-test'; }
+alarm_sent=false
+failed_alarm_type=""
+failed_alarm_detail=""
+send_backup_alarm() {
+  if [[ -n "${TEST_ALARM_LOG:-}" ]]; then
+    printf '%s\n' "$1" >>"$TEST_ALARM_LOG"
+  fi
+  alarm_sent=true
+  return 0
+}
+fail_with_alarm() {
+  echo "$2" >&2
+  failed_alarm_type="$1"
+  failed_alarm_detail="$2"
+  send_backup_alarm "$1" "$2"
+  exit 1
+}
+alarm_on_unexpected_failure() {
+  local exit_code=$?
+  if ((exit_code == 0)) || [[ "$alarm_sent" == "true" ]]; then
+    return 0
+  fi
+  if [[ -n "$failed_alarm_type" ]]; then
+    send_backup_alarm "$failed_alarm_type" "$failed_alarm_detail"
+  else
+    send_backup_alarm "$1" "unexpected failure with exit code $exit_code"
+  fi
+  return 0
+}
+alarm_if_upload_delayed() { :; }
 aws() { printf '%s' "${TEST_S3_KEYS:-}"; }
 require_dump_staging_space() {
   if [[ -n "${TEST_SPACE_CHECK_LOG:-}" ]]; then
@@ -500,6 +543,394 @@ EOF
   fi
 }
 
+test_backup_alarm_port_fallback() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    export ALARM_API_HOST="172.31.0.10"
+    export ALARM_API_PORTS="8080 9080"
+    export ALARM_API_TOKEN="test-token"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    local attempt_log="$TEST_ROOT/alarm-attempts"
+    : >"$attempt_log"
+    instance_id() { printf '%s' 'i-test'; }
+    # 활성 슬롯만 응답하는 상황을 재현한다. blue 는 닫혀 있고 green 만 열려 있다.
+    curl() {
+      local argument
+      for argument in "$@"; do
+        case "$argument" in
+          http://*:8080/*) echo "8080" >>"$attempt_log"; return 7 ;;
+          http://*:9080/*) echo "9080" >>"$attempt_log"; return 0 ;;
+        esac
+      done
+      return 0
+    }
+
+    send_backup_alarm DUMP_FAILED "test detail" >/dev/null
+    assert_equals \
+      "8080 9080" \
+      "$(tr '\n' ' ' <"$attempt_log" | sed 's/ $//')" \
+      "the alarm must try the blue port first and fall back to the green port"
+    assert_equals "true" "$alarm_sent" "a delivered alarm must mark the sent flag"
+  )
+}
+
+test_backup_alarm_failure_does_not_break_backup() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    export ALARM_API_HOST="172.31.0.10"
+    export ALARM_API_PORTS="8080 9080"
+    export ALARM_API_TOKEN="test-token"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    instance_id() { printf '%s' 'i-test'; }
+    curl() { return 7; }
+
+    if ! send_backup_alarm DUMP_FAILED "test detail" >/dev/null 2>&1; then
+      echo "An alarm delivery failure must not fail the backup." >&2
+      exit 1
+    fi
+    assert_equals "false" "$alarm_sent" "an undelivered alarm must not mark the sent flag"
+  )
+}
+
+test_backup_alarm_skipped_without_configuration() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    curl() { echo "The alarm must not be sent without configuration." >&2; return 99; }
+    instance_id() { printf '%s' 'i-test'; }
+
+    send_backup_alarm DUMP_FAILED "test detail" >/dev/null 2>&1
+    assert_equals "false" "$alarm_sent" "an alarm without configuration must not be marked as sent"
+  )
+}
+
+test_backup_alarm_detail_escaping() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    assert_equals \
+      'say \"hi\"' \
+      "$(json_escape 'say "hi"')" \
+      "double quotes in the detail must be escaped for json"
+    assert_equals \
+      'a\\b' \
+      "$(json_escape 'a\b')" \
+      "backslashes in the detail must be escaped for json"
+    assert_equals \
+      'first\nsecond' \
+      "$(json_escape "$(printf 'first\nsecond')")" \
+      "newlines in the detail must be escaped for json"
+  )
+}
+
+# 명시적으로 알린 실패를 EXIT 트랩이 기본 유형으로 다시 보내지 않는지 본다.
+# 전송에 실패한 경우까지 확인한다. 이때 재전송이 일어나면 알림 유형과 원인이 함께 뒤바뀐다.
+test_unexpected_failure_alarm_is_sent_once() {
+  run_failure_alarm_case() {
+    local delivery_succeeds="$1"
+    local send_log="$2"
+    (
+      export MYSQL_BACKUP_BUCKET="test-bucket"
+      export MYSQL_DATABASE="test_database"
+      export AWS_REGION="ap-northeast-2"
+      # shellcheck source=../lib/backup-common.sh
+      source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+      export ALARM_API_HOST="172.31.0.10"
+      export ALARM_API_PORTS="8080 9080"
+      export ALARM_API_TOKEN="test-token"
+      export DELIVERY_SUCCEEDS="$delivery_succeeds"
+      export SEND_LOG="$send_log"
+
+      instance_id() { printf '%s' 'i-test'; }
+      # 실제 스크립트와 같은 순서로 트랩을 걸어 기본 유형이 덮어쓰는지 확인한다.
+      trap 'alarm_on_unexpected_failure BINLOG_UPLOAD_FAILED' EXIT
+      # 요청 본문에서 알림 유형만 뽑아 기록해, 시도 횟수와 유형을 함께 확인할 수 있게 한다.
+      curl() {
+        local argument
+        local payload=""
+        local expects_payload=false
+        local is_alarm_request=false
+        local port
+
+        for argument in "$@"; do
+          if [[ "$expects_payload" == "true" ]]; then
+            payload="$argument"
+            expects_payload=false
+            continue
+          fi
+          case "$argument" in
+            -d) expects_payload=true ;;
+            *"$ALARM_PATH")
+              is_alarm_request=true
+              # 알림 전송은 app 포트로만 나가야 한다.
+              port="${argument#http://*:}"
+              port="${port%%/*}"
+              case " $ALARM_API_PORTS " in
+                *" $port "*) ;;
+                *)
+                  echo "the alarm path must be requested on an app port, got $port" >&2
+                  return 1
+                  ;;
+              esac
+              ;;
+          esac
+        done
+        if [[ "$is_alarm_request" == "true" ]]; then
+          payload="${payload#*\"type\":\"}"
+          printf '%s\n' "${payload%%\"*}" >>"$SEND_LOG"
+        fi
+        [[ "$DELIVERY_SUCCEEDS" == "true" ]]
+      }
+
+      fail_with_alarm BINLOG_GAP_DETECTED "binlog chain is broken" 2>/dev/null
+    )
+  }
+
+  # 전송에 성공하면 한 번만 시도한다.
+  local delivered_log="$TEST_ROOT/alarm-send-delivered"
+  : >"$delivered_log"
+  run_failure_alarm_case true "$delivered_log" || true
+  assert_equals \
+    "BINLOG_GAP_DETECTED" \
+    "$(cat "$delivered_log")" \
+    "an already reported failure must not be alarmed twice"
+
+  # 전송에 실패하면 트랩이 같은 유형으로 한 번 더 시도한다.
+  # 포트 두 개를 순회하는 시도가 두 번이므로 4회이고, 유형은 처음 알린 것이 그대로 유지되어야 한다.
+  local failed_log="$TEST_ROOT/alarm-send-failed"
+  : >"$failed_log"
+  run_failure_alarm_case false "$failed_log" || true
+  # 유형이 바뀌는 것이 근본 문제이므로 먼저 확인한다.
+  assert_equals \
+    "BINLOG_GAP_DETECTED" \
+    "$(sort -u "$failed_log")" \
+    "an undelivered explicit alarm must keep its type when the exit trap retries"
+  assert_equals \
+    "4" \
+    "$(wc -l <"$failed_log" | tr -d ' ')" \
+    "an undelivered explicit alarm must be retried once by the exit trap"
+}
+
+test_binlog_delay_alarm_threshold() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    local alarm_log="$TEST_ROOT/delay-alarm.log"
+    local success_file="$TEST_ROOT/last-binlog-success"
+    send_backup_alarm() { printf '%s\n' "$1" >>"$alarm_log"; alarm_sent=true; return 0; }
+    date() {
+      if [[ "$*" == "-u +%s" ]]; then
+        printf '%s\n' '1784170800'
+      else
+        command date "$@"
+      fi
+    }
+
+    # 한 주기(5분)만 지난 상태는 정상 범위로 보고 알리지 않는다.
+    : >"$alarm_log"
+    printf '%s\n' '1784170500' >"$success_file"
+    alarm_if_upload_delayed "$success_file" 900
+    assert_equals "" "$(cat "$alarm_log")" "a single missed cycle must not raise a delay alarm"
+
+    # 세 주기를 넘기면 지연으로 알린다.
+    : >"$alarm_log"
+    printf '%s\n' '1784169600' >"$success_file"
+    alarm_if_upload_delayed "$success_file" 900
+    assert_equals \
+      "BINLOG_UPLOAD_DELAYED" \
+      "$(cat "$alarm_log")" \
+      "an upload delayed beyond three cycles must be alarmed"
+    assert_equals \
+      "false" \
+      "$alarm_sent" \
+      "a delay alarm must not suppress the alarm for an actual failure in the same run"
+
+    # 마지막 성공 기록이 없으면 판단하지 않는다.
+    : >"$alarm_log"
+    rm -f "$success_file"
+    alarm_if_upload_delayed "$success_file" 900
+    assert_equals "" "$(cat "$alarm_log")" "a missing success record must not raise a delay alarm"
+  )
+}
+
+# 설치 검증이 tcp 연결이 아니라 health 응답과 401 응답을 확인하는지 본다.
+# 설치 전 검증은 공용 라이브러리를 읽을 수 없어 알림 경로를 각자 들고 있다.
+# 두 값이 어긋나면 설치 검증이 배포되지 않은 경로를 호출해 잘못된 판정을 내리므로 같은지 확인한다.
+test_alarm_path_is_consistent() {
+  local lib_alarm_path
+  local remote_alarm_path
+
+  lib_alarm_path="$(sed -n 's/^readonly ALARM_PATH="\(.*\)"$/\1/p' \
+    "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh")"
+  remote_alarm_path="$(sed -n 's/^readonly ALARM_PATH="\(.*\)"$/\1/p' \
+    "$PROJECT_DIR/scripts/mysql_backup/validate-remote.sh")"
+
+  if [[ -z "$lib_alarm_path" ]]; then
+    echo "Could not read ALARM_PATH from the shared library." >&2
+    exit 1
+  fi
+  assert_equals \
+    "$lib_alarm_path" \
+    "$remote_alarm_path" \
+    "the pre-installation validator must call the same alarm path as the shared library"
+}
+
+test_verify_alarm_endpoint() {
+  local endpoint_stderr="$TEST_ROOT/verify-endpoint-stderr"
+
+  run_endpoint_case() {
+    local health_ok="$1"
+    local alarm_status="$2"
+    (
+      export MYSQL_BACKUP_BUCKET="test-bucket"
+      export MYSQL_DATABASE="test_database"
+      export AWS_REGION="ap-northeast-2"
+      # shellcheck source=../lib/backup-common.sh
+      source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+      export ALARM_API_HOST="172.31.0.10"
+      export ALARM_API_PORTS="8080 9080"
+      export ALARM_API_HEALTH_PORTS="8081 9081"
+
+      # health 는 본문을, 알림 경로는 상태 코드를 돌려주도록 흉내낸다.
+      # 경로마다 허용하는 포트를 제한해, 구현이 두 포트 목록을 뒤바꿔 써도 통과하지 않게 한다.
+      # actuator 는 management 포트에만, 알림 경로는 app 포트에만 열려 있어 교차 호출은 운영에서 실패한다.
+      curl() {
+        local argument
+        local url=""
+        local port
+        local path
+
+        for argument in "$@"; do
+          case "$argument" in
+            http://*) url="$argument" ;;
+          esac
+        done
+        port="${url#http://*:}"
+        port="${port%%/*}"
+        path="/${url#http://*/}"
+
+        case "$path" in
+          /actuator/health)
+            case " $ALARM_API_HEALTH_PORTS " in
+              *" $port "*) ;;
+              *)
+                echo "health must be requested on a management port, got $port" >&2
+                return 1
+                ;;
+            esac
+            if [[ "$FAKE_HEALTH_OK" == "true" ]]; then
+              printf '%s\n' '{"status":"UP"}'
+              return 0
+            fi
+            return 22
+            ;;
+          "$ALARM_PATH")
+            case " $ALARM_API_PORTS " in
+              *" $port "*) ;;
+              *)
+                echo "the alarm path must be requested on an app port, got $port" >&2
+                return 1
+                ;;
+            esac
+            printf '%s' "$FAKE_ALARM_STATUS"
+            return 0
+            ;;
+          *)
+            echo "unexpected request path: $path" >&2
+            return 1
+            ;;
+        esac
+      }
+
+      # mock 이 남기는 위반 사유를 실패 시 보여주기 위해 stderr 를 파일로 받는다.
+      FAKE_HEALTH_OK="$health_ok" FAKE_ALARM_STATUS="$alarm_status" \
+        verify_alarm_endpoint >/dev/null 2>"$endpoint_stderr"
+    )
+  }
+
+  if ! run_endpoint_case true 401; then
+    echo "A healthy api server that rejects an invalid token must pass verification." >&2
+    cat "$endpoint_stderr" >&2
+    exit 1
+  fi
+  # 애플리케이션이 기동하지 않았다면 tcp 가 열려 있어도 통과하면 안 된다.
+  if run_endpoint_case false 401; then
+    echo "Verification must fail when no management port reports UP." >&2
+    exit 1
+  fi
+  # 경로가 배포되지 않아 404 가 오면 통과하면 안 된다.
+  if run_endpoint_case true 404; then
+    echo "Verification must fail when the alarm endpoint is not deployed." >&2
+    exit 1
+  fi
+  # 실제로 미배포 서버는 정적 리소스 처리로 넘어가 500 을 반환하므로 이 경우도 막아야 한다.
+  if run_endpoint_case true 500; then
+    echo "Verification must fail when the api server answers the alarm path with 500." >&2
+    exit 1
+  fi
+}
+
+test_alarm_target_validation() {
+  (
+    export MYSQL_BACKUP_BUCKET="test-bucket"
+    export MYSQL_DATABASE="test_database"
+    export AWS_REGION="ap-northeast-2"
+    # shellcheck source=../lib/backup-common.sh
+    source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
+    if ! validate_alarm_target "172.31.56.245" "8080 9080" 2>/dev/null; then
+      echo "A valid alarm target must pass validation." >&2
+      exit 1
+    fi
+
+    # 옥텟 범위를 넘는 주소는 형식만 맞아도 거부한다.
+    if validate_alarm_target "999.999.999.999" "8080" 2>/dev/null; then
+      echo "An out-of-range octet must be rejected." >&2
+      exit 1
+    fi
+    if validate_alarm_target "172.31.56" "8080" 2>/dev/null; then
+      echo "An incomplete address must be rejected." >&2
+      exit 1
+    fi
+
+    # 포트 범위를 벗어나면 거부한다.
+    if validate_alarm_target "172.31.56.245" "0" 2>/dev/null; then
+      echo "Port 0 must be rejected." >&2
+      exit 1
+    fi
+    if validate_alarm_target "172.31.56.245" "65536" 2>/dev/null; then
+      echo "Port 65536 must be rejected." >&2
+      exit 1
+    fi
+    if validate_alarm_target "172.31.56.245" "8080 70000" 2>/dev/null; then
+      echo "An out-of-range port in the list must be rejected." >&2
+      exit 1
+    fi
+  )
+}
+
 test_upload_idempotency
 test_dump_space_calculation
 test_validate_requires_schema
@@ -507,4 +938,13 @@ test_binlog_chain
 test_dump_retry_manifest
 test_dump_rejects_insufficient_space
 test_dump_discards_stale_job
+test_backup_alarm_port_fallback
+test_backup_alarm_failure_does_not_break_backup
+test_backup_alarm_skipped_without_configuration
+test_backup_alarm_detail_escaping
+test_unexpected_failure_alarm_is_sent_once
+test_binlog_delay_alarm_threshold
+test_alarm_target_validation
+test_verify_alarm_endpoint
+test_alarm_path_is_consistent
 echo "All MySQL backup tests passed."

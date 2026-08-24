@@ -6,6 +6,11 @@ data "aws_vpc" "default" {
 module "stage_stack" {
   source = "../../modules/app_stack"
 
+  # stage 는 DB 가 API 인스턴스의 컨테이너로 떠 있어 별도 DB EC2 가 없다.
+  # enable_db_ec2 가 false 라 알림 인그레스가 생성되지 않으므로 빈 목록을 넘긴다.
+  internal_alarm_api_ports            = []
+  internal_alarm_api_management_ports = []
+
   env_name = "stage"
   vpc_id   = data.aws_vpc.default.id
 

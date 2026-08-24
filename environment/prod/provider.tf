@@ -3,8 +3,9 @@ terraform {
 
   required_providers {
     aws = {
-      source  = "hashicorp/aws"
-      version = ">= 5.0"
+      source = "hashicorp/aws"
+      # blocked_encryption_types 는 6.22.0 부터 지원합니다.
+      version = ">= 6.22.0"
     }
     mysql = {
       source  = "petoju/mysql"

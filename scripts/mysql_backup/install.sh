@@ -9,6 +9,10 @@ readonly INSTALL_BIN_DIR="/usr/local/libexec/solid-connection"
 readonly CONFIG_DIR="/etc/solid-connection"
 readonly CONFIG_FILE="$CONFIG_DIR/mysql-backup.env"
 readonly INSTALL_LOCK_FILE="/run/lock/solid-connection-mysql-backup-install.lock"
+# 대기 상한입니다. 진행 중인 백업 작업과 다른 설치 트랜잭션을 기다릴 때 함께 사용합니다.
+# binlog는 최대 4분, dump는 최대 2시간 실행되므로, dump가 도는 중이라면
+# 기다리기보다 중단하고 다른 시각에 다시 실행하는 편이 낫습니다.
+readonly LOCK_WAIT_SECONDS=300
 readonly -a TIMER_UNITS=(
   mysql-backup-binlog.timer
   mysql-backup-dump.timer
@@ -23,7 +27,7 @@ if [[ ! -f "$CONFIG_SOURCE" ]]; then
   exit 1
 fi
 
-for command_name in aws bash cp docker flock gzip install mountpoint mv sha256sum systemctl systemd-analyze; do
+for command_name in aws bash cp curl docker flock gzip install mountpoint mv sha256sum systemctl systemd-analyze; do
   command -v "$command_name" >/dev/null || {
     echo "Required command is not installed: $command_name" >&2
     exit 1
@@ -37,7 +41,10 @@ fi
 
 # GitHub Actions와 수동 실행이 겹쳐도 하나의 설치 트랜잭션만 진행합니다.
 exec 200>"$INSTALL_LOCK_FILE"
-flock 200
+if ! flock -w "$LOCK_WAIT_SECONDS" 200; then
+  echo "Another installation is already in progress; aborting." >&2
+  exit 1
+fi
 
 install -d -m 755 -o root -g root "$INSTALL_LIB_DIR" "$INSTALL_BIN_DIR" "$CONFIG_DIR"
 install -d -m 700 -o root -g root \
@@ -66,7 +73,7 @@ load_candidate_config() {
   while IFS='=' read -r key value || [[ -n "$key" ]]; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION)
+      MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_HEALTH_PORTS|ALARM_API_TOKEN)
         printf -v "$key" '%s' "$value"
         export "$key"
         ;;
@@ -114,6 +121,17 @@ atomic_install() {
   mv -Tf "$temporary" "$target"
 }
 
+# 타이머를 켜기 전에 백업 작업 락을 놓습니다.
+# Persistent=true 로 즉시 트리거되는 작업도 같은 락을 얻어야 하므로,
+# 설치가 락을 쥔 채 타이머를 켜면 그 작업이 그대로 건너뛰어집니다.
+# 아직 열지 않은 상태에서도 호출될 수 있어 실패를 무시합니다.
+# fd 는 닫지 않습니다. exec 에 붙인 리다이렉션은 셸 전체에 영구 적용되어
+# 이후 오류 메시지가 사라지고, 락은 flock -u 만으로 해제됩니다.
+release_backup_locks() {
+  flock -u 198 2>/dev/null || true
+  flock -u 199 2>/dev/null || true
+}
+
 rollback_installation() {
   local target
   local backup
@@ -151,6 +169,7 @@ cleanup() {
   if [[ "$transaction_started" == "true" && "$transaction_committed" != "true" ]]; then
     echo "Installation failed; restoring the previous backup pipeline." >&2
     set +e
+    release_backup_locks
     rollback_installation
   fi
   rm -rf -- "$TRANSACTION_DIR"
@@ -182,11 +201,32 @@ for unit in "$CANDIDATE_DIR"/systemd/*; do
 done
 transaction_started=true
 
-# 실행 중인 dump/binlog가 끝난 뒤 교체하여 한 작업에서 서로 다른 버전이 섞이지 않게 합니다.
+# 교체 구간에 타이머가 발화하면 스크립트가 락을 얻지 못해 그 주기의 백업을 건너뜁니다.
+# binlog는 다음 주기가 따라잡지만 dump는 하루 한 번이라 그날 복구 기준점이 사라집니다.
+# 락을 잡기 전에 타이머를 멈춰 새 발화를 막고, 멈춘 사이에 놓친 발화는 Persistent=true 로
+# 타이머를 다시 켜는 시점에 즉시 실행되게 합니다. 실패하면 cleanup 이 이전 상태로 되돌립니다.
+# 최초 설치에는 유닛 파일이 아직 없어 stop 이 실패하므로, 앞에서 확인한 활성 상태를 기준으로 멈춥니다.
+for timer in "${TIMER_UNITS[@]}"; do
+  if [[ "${TIMER_WAS_ACTIVE[$timer]}" == "true" ]]; then
+    systemctl stop "$timer"
+  fi
+done
+
+# 이미 실행 중인 dump/binlog가 끝난 뒤 교체하여 한 작업에서 서로 다른 버전이 섞이지 않게 합니다.
+# 무기한 대기하면 SSM 세션이 유휴로 끊겨 원인을 알 수 없는 실패가 되므로 상한을 둡니다.
 exec 198>/mnt/mysql-data/mysql-backup/state/dump.lock
 exec 199>/mnt/mysql-data/mysql-backup/state/binlog.lock
-flock 198
-flock 199
+echo "Waiting for any running backup job to finish (up to ${LOCK_WAIT_SECONDS}s)..."
+if ! flock -w "$LOCK_WAIT_SECONDS" 198; then
+  echo "A mysqldump backup is still running after ${LOCK_WAIT_SECONDS}s; aborting the installation." >&2
+  echo "Retry outside the dump window (03:00 KST, up to 2h)." >&2
+  exit 1
+fi
+if ! flock -w "$LOCK_WAIT_SECONDS" 199; then
+  echo "A binlog backup is still running after ${LOCK_WAIT_SECONDS}s; aborting the installation." >&2
+  echo "A binlog job normally finishes within 4 minutes, so check whether it is stuck." >&2
+  exit 1
+fi
 
 atomic_install "$CANDIDATE_DIR/lib/backup-common.sh" "$INSTALL_LIB_DIR/backup-common.sh" 644
 for script in "$CANDIDATE_DIR"/bin/*; do
@@ -202,6 +242,10 @@ done
 
 systemd-analyze verify "${INSTALLED_UNIT_TARGETS[@]}"
 systemctl daemon-reload
+
+# 교체가 끝났고 타이머도 아직 꺼져 있어 이 시점부터는 락이 필요하지 않습니다.
+release_backup_locks
+
 systemctl enable --now "${TIMER_UNITS[@]}"
 transaction_committed=true
 

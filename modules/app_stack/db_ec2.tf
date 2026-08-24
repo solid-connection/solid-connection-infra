@@ -45,7 +45,10 @@ resource "aws_instance" "db_server" {
   instance_type = var.db_instance_type
   subnet_id     = var.db_subnet_id
 
-  vpc_security_group_ids      = [aws_security_group.db_ec2_sg[count.index].id]
+  vpc_security_group_ids = [
+    aws_security_group.db_ec2_sg[count.index].id,
+    aws_security_group.db_ec2_alarm_client_sg[count.index].id,
+  ]
   associate_public_ip_address = false
   iam_instance_profile        = var.ec2_iam_instance_profile
   key_name                    = var.key_name

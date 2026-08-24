@@ -5,8 +5,11 @@ readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-
 # shellcheck source=../lib/backup-common.sh
 source "$LIB_DIR/backup-common.sh"
 
+# 사전 조건 검사 실패도 알리도록 소싱 직후에 등록합니다.
+trap 'alarm_on_unexpected_failure DUMP_FAILED' EXIT
+
 require_backup_environment
-require_commands aws docker flock gzip sha256sum
+require_commands aws curl docker flock gzip sha256sum
 
 readonly MAX_DUMP_JOB_AGE_SECONDS=21600
 
@@ -64,15 +67,22 @@ install -d -m 700 "$JOB_DIR"
 if [[ ! -s "$DUMP_FILE" ]]; then
   partial_dump="$DUMP_FILE.partial"
   rm -f "$partial_dump"
-  space_status="$(require_dump_staging_space)"
+  # 성공 시 stdout 만 파싱해야 하므로 stderr 를 섞지 않고, 실패 원인은 스크립트 로그에 남긴다.
+  if ! space_status="$(require_dump_staging_space)"; then
+    fail_with_alarm DUMP_FAILED "insufficient staging space for the mysql dump"
+  fi
   read -r database_bytes available_bytes required_bytes <<<"$space_status"
   echo "MySQL dump staging space is sufficient: database_bytes=$database_bytes available_bytes=$available_bytes required_bytes=$required_bytes"
 
-  docker exec "$MYSQL_CONTAINER" sh -lc \
+  if ! docker exec "$MYSQL_CONTAINER" sh -lc \
     'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec mysqldump -uroot --single-transaction --quick --source-data=2 --routines --events --triggers --hex-blob --set-gtid-purged=OFF --no-tablespaces "$1"' \
-    sh "$MYSQL_DATABASE" | gzip -1 >"$partial_dump"
+    sh "$MYSQL_DATABASE" | gzip -1 >"$partial_dump"; then
+    fail_with_alarm DUMP_FAILED "mysqldump failed for database $MYSQL_DATABASE"
+  fi
 
-  test -s "$partial_dump"
+  if [[ ! -s "$partial_dump" ]]; then
+    fail_with_alarm DUMP_FAILED "mysqldump produced an empty dump for database $MYSQL_DATABASE"
+  fi
   mv "$partial_dump" "$DUMP_FILE"
 fi
 
@@ -81,8 +91,7 @@ printf '%s  %s\n' "$dump_checksum" "$(basename "$DUMP_FILE")" >"$CHECKSUM_FILE"
 
 source_status="$(gzip -dc "$DUMP_FILE" | grep -m1 '^-- CHANGE REPLICATION SOURCE TO' || true)"
 if [[ -z "$source_status" ]]; then
-  echo "The dump does not contain a binary log recovery position." >&2
-  exit 1
+  fail_with_alarm DUMP_FAILED "the dump does not contain a binary log recovery position"
 fi
 
 source_file="$(sed -n "s/.*SOURCE_LOG_FILE='\([^']*\)'.*/\1/p" <<<"$source_status")"
@@ -92,8 +101,7 @@ dump_size="$(stat -c %s "$DUMP_FILE")"
 created_at="${job_id:0:4}-${job_id:4:2}-${job_id:6:2}T${job_id:9:2}:${job_id:11:2}:${job_id:13:2}Z"
 
 if [[ ! "$source_file" =~ ^binlog\.[0-9]{6}$ || ! "$source_position" =~ ^[0-9]+$ || ! "$database_server_uuid" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
-  echo "Failed to parse dump recovery metadata." >&2
-  exit 1
+  fail_with_alarm DUMP_FAILED "failed to parse dump recovery metadata"
 fi
 
 cat >"$MANIFEST_FILE" <<EOF
@@ -112,10 +120,14 @@ cat >"$MANIFEST_FILE" <<EOF
 EOF
 
 readonly OBJECT_PREFIX="dump/${job_id:0:4}/${job_id:4:2}/${job_id:6:2}/$job_id"
-upload_file_once "$DUMP_FILE" "$OBJECT_PREFIX/$(basename "$DUMP_FILE")"
-upload_file_once "$CHECKSUM_FILE" "$OBJECT_PREFIX/$(basename "$CHECKSUM_FILE")"
+if ! upload_file_once "$DUMP_FILE" "$OBJECT_PREFIX/$(basename "$DUMP_FILE")" \
+  || ! upload_file_once "$CHECKSUM_FILE" "$OBJECT_PREFIX/$(basename "$CHECKSUM_FILE")"; then
+  fail_with_alarm DUMP_FAILED "failed to upload the dump to s3: $OBJECT_PREFIX"
+fi
 # manifest를 마지막에 업로드하여 해당 prefix의 백업 완료 표식으로 사용합니다.
-upload_file_once "$MANIFEST_FILE" "$OBJECT_PREFIX/manifest.json"
+if ! upload_file_once "$MANIFEST_FILE" "$OBJECT_PREFIX/manifest.json"; then
+  fail_with_alarm DUMP_FAILED "failed to upload the dump manifest to s3: $OBJECT_PREFIX"
+fi
 
 printf '%s\n' "$created_at" >"$STATE_DIR/last-dump-success.tmp"
 mv "$STATE_DIR/last-dump-success.tmp" "$STATE_DIR/last-dump-success"

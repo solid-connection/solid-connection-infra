@@ -6,7 +6,8 @@ readonly LIB_DIR="${MYSQL_BACKUP_LIB_DIR:-/usr/local/lib/solid-connection/mysql-
 source "$LIB_DIR/backup-common.sh"
 
 require_backup_environment
-require_commands aws docker flock gzip sha256sum
+require_alarm_environment
+require_commands aws curl docker flock gzip sha256sum
 
 mountpoint -q /mnt/mysql-data
 docker inspect "$MYSQL_CONTAINER" >/dev/null
@@ -41,6 +42,8 @@ read -r database_bytes available_bytes required_bytes <<<"$space_status"
 aws s3api head-bucket \
   --bucket "$MYSQL_BACKUP_BUCKET" \
   --region "$AWS_REGION" >/dev/null
+
+verify_alarm_endpoint
 
 echo "MySQL backup validation succeeded."
 echo "database_bytes=$database_bytes available_bytes=$available_bytes required_bytes=$required_bytes"
