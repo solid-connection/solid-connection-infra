@@ -14,10 +14,11 @@ readonly ALARM_DETAIL_MAX_LENGTH=1000
 
 # 같은 실패로 알림이 두 번 나가지 않도록 전송 여부를 기록합니다.
 alarm_sent=false
-# 이번 실행의 실패를 이미 알림으로 처리했는지 기록합니다.
-# 전송 성공 여부와는 별개입니다. 전송이 실패했더라도 EXIT 트랩이 기본 유형으로 다시 보내면
-# 실패 원인과 알림 유형이 어긋나므로, 처리 여부를 따로 둡니다.
-alarm_handled=false
+# 명시적으로 알리려던 실패의 유형과 원인을 보존합니다.
+# 전송이 실패하면 EXIT 트랩이 기본 유형으로 바꾸지 않고 같은 내용으로 한 번 더 시도합니다.
+# 유형이 바뀌면 실패 원인과 대응 방법이 함께 달라지고, 그대로 포기하면 그날의 알림이 사라집니다.
+failed_alarm_type=""
+failed_alarm_detail=""
 
 require_backup_environment() {
   : "${MYSQL_BACKUP_BUCKET:?MYSQL_BACKUP_BUCKET is required}"
@@ -265,9 +266,10 @@ fail_with_alarm() {
   local detail="$2"
 
   echo "$detail" >&2
+  # 전송이 실패해도 EXIT 트랩이 같은 유형으로 재시도할 수 있도록 남겨둡니다.
+  failed_alarm_type="$alarm_type"
+  failed_alarm_detail="$detail"
   send_backup_alarm "$alarm_type" "$detail"
-  # 전송 성공 여부와 무관하게 처리한 것으로 기록해, EXIT 트랩이 다른 유형으로 다시 보내지 않게 합니다.
-  alarm_handled=true
   exit 1
 }
 
@@ -276,7 +278,13 @@ alarm_on_unexpected_failure() {
   local exit_code=$?
   local default_alarm_type="$1"
 
-  if ((exit_code != 0)) && [[ "$alarm_handled" != "true" ]]; then
+  if ((exit_code == 0)) || [[ "$alarm_sent" == "true" ]]; then
+    return 0
+  fi
+  if [[ -n "$failed_alarm_type" ]]; then
+    # 이미 알리려던 실패이므로 유형과 원인을 그대로 두고 한 번 더 시도합니다.
+    send_backup_alarm "$failed_alarm_type" "$failed_alarm_detail"
+  else
     send_backup_alarm "$default_alarm_type" "unexpected failure with exit code $exit_code"
   fi
   return 0
@@ -298,8 +306,8 @@ alarm_if_upload_delayed() {
   if ((elapsed_seconds > threshold_seconds)); then
     send_backup_alarm BINLOG_UPLOAD_DELAYED \
       "the last successful binlog upload was $elapsed_seconds seconds ago"
-    # 지연은 실패가 아니므로 alarm_handled 를 세우지 않습니다.
-    # 이번 실행이 실제로 실패하면 그 실패는 별도로 알립니다.
+    # 지연은 실패가 아니므로, 이번 실행이 실제로 실패하면 다시 알릴 수 있도록 되돌립니다.
+    alarm_sent=false
   fi
 }
 

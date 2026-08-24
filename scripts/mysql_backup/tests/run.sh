@@ -150,7 +150,8 @@ flock() { return 0; }
 curl() { return 0; }
 instance_id() { printf '%s' 'i-test'; }
 alarm_sent=false
-alarm_handled=false
+failed_alarm_type=""
+failed_alarm_detail=""
 send_backup_alarm() {
   if [[ -n "${TEST_ALARM_LOG:-}" ]]; then
     printf '%s\n' "$1" >>"$TEST_ALARM_LOG"
@@ -160,13 +161,19 @@ send_backup_alarm() {
 }
 fail_with_alarm() {
   echo "$2" >&2
+  failed_alarm_type="$1"
+  failed_alarm_detail="$2"
   send_backup_alarm "$1" "$2"
-  alarm_handled=true
   exit 1
 }
 alarm_on_unexpected_failure() {
   local exit_code=$?
-  if ((exit_code != 0)) && [[ "$alarm_handled" != "true" ]]; then
+  if ((exit_code == 0)) || [[ "$alarm_sent" == "true" ]]; then
+    return 0
+  fi
+  if [[ -n "$failed_alarm_type" ]]; then
+    send_backup_alarm "$failed_alarm_type" "$failed_alarm_detail"
+  else
     send_backup_alarm "$1" "unexpected failure with exit code $exit_code"
   fi
   return 0
@@ -705,8 +712,8 @@ test_unexpected_failure_alarm_is_sent_once() {
     "$(cat "$delivered_log")" \
     "an already reported failure must not be alarmed twice"
 
-  # 전송에 실패해도 트랩이 기본 유형으로 다시 보내지 않는다.
-  # 포트 두 개를 모두 시도하므로 2회이고, 유형은 처음 알린 것이 그대로 유지되어야 한다.
+  # 전송에 실패하면 트랩이 같은 유형으로 한 번 더 시도한다.
+  # 포트 두 개를 순회하는 시도가 두 번이므로 4회이고, 유형은 처음 알린 것이 그대로 유지되어야 한다.
   local failed_log="$TEST_ROOT/alarm-send-failed"
   : >"$failed_log"
   run_failure_alarm_case false "$failed_log" || true
@@ -714,11 +721,11 @@ test_unexpected_failure_alarm_is_sent_once() {
   assert_equals \
     "BINLOG_GAP_DETECTED" \
     "$(sort -u "$failed_log")" \
-    "an undelivered explicit alarm must not be replaced by the default type"
+    "an undelivered explicit alarm must keep its type when the exit trap retries"
   assert_equals \
-    "2" \
+    "4" \
     "$(wc -l <"$failed_log" | tr -d ' ')" \
-    "an undelivered explicit alarm must not be resent beyond the port fallback"
+    "an undelivered explicit alarm must be retried once by the exit trap"
 }
 
 test_binlog_delay_alarm_threshold() {
@@ -756,7 +763,7 @@ test_binlog_delay_alarm_threshold() {
       "an upload delayed beyond three cycles must be alarmed"
     assert_equals \
       "false" \
-      "$alarm_handled" \
+      "$alarm_sent" \
       "a delay alarm must not suppress the alarm for an actual failure in the same run"
 
     # 마지막 성공 기록이 없으면 판단하지 않는다.
