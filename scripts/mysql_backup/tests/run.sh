@@ -660,6 +660,7 @@ test_unexpected_failure_alarm_is_sent_once() {
         local payload=""
         local expects_payload=false
         local is_alarm_request=false
+        local port
 
         for argument in "$@"; do
           if [[ "$expects_payload" == "true" ]]; then
@@ -669,7 +670,19 @@ test_unexpected_failure_alarm_is_sent_once() {
           fi
           case "$argument" in
             -d) expects_payload=true ;;
-            *"$ALARM_PATH") is_alarm_request=true ;;
+            *"$ALARM_PATH")
+              is_alarm_request=true
+              # 알림 전송은 app 포트로만 나가야 한다.
+              port="${argument#http://*:}"
+              port="${port%%/*}"
+              case " $ALARM_API_PORTS " in
+                *" $port "*) ;;
+                *)
+                  echo "the alarm path must be requested on an app port, got $port" >&2
+                  return 1
+                  ;;
+              esac
+              ;;
           esac
         done
         if [[ "$is_alarm_request" == "true" ]]; then
@@ -777,6 +790,8 @@ test_alarm_path_is_consistent() {
 }
 
 test_verify_alarm_endpoint() {
+  local endpoint_stderr="$TEST_ROOT/verify-endpoint-stderr"
+
   run_endpoint_case() {
     local health_ok="$1"
     local alarm_status="$2"
@@ -792,33 +807,65 @@ test_verify_alarm_endpoint() {
       export ALARM_API_HEALTH_PORTS="8081 9081"
 
       # health 는 본문을, 알림 경로는 상태 코드를 돌려주도록 흉내낸다.
+      # 경로마다 허용하는 포트를 제한해, 구현이 두 포트 목록을 뒤바꿔 써도 통과하지 않게 한다.
+      # actuator 는 management 포트에만, 알림 경로는 app 포트에만 열려 있어 교차 호출은 운영에서 실패한다.
       curl() {
         local argument
+        local url=""
+        local port
+        local path
+
         for argument in "$@"; do
           case "$argument" in
-            *"/actuator/health")
-              if [[ "$FAKE_HEALTH_OK" == "true" ]]; then
-                printf '%s\n' '{"status":"UP"}'
-                return 0
-              fi
-              return 22
-              ;;
-            *"/internal/alarms/db-backup")
-              printf '%s' "$FAKE_ALARM_STATUS"
-              return 0
-              ;;
+            http://*) url="$argument" ;;
           esac
         done
-        return 0
+        port="${url#http://*:}"
+        port="${port%%/*}"
+        path="/${url#http://*/}"
+
+        case "$path" in
+          /actuator/health)
+            case " $ALARM_API_HEALTH_PORTS " in
+              *" $port "*) ;;
+              *)
+                echo "health must be requested on a management port, got $port" >&2
+                return 1
+                ;;
+            esac
+            if [[ "$FAKE_HEALTH_OK" == "true" ]]; then
+              printf '%s\n' '{"status":"UP"}'
+              return 0
+            fi
+            return 22
+            ;;
+          "$ALARM_PATH")
+            case " $ALARM_API_PORTS " in
+              *" $port "*) ;;
+              *)
+                echo "the alarm path must be requested on an app port, got $port" >&2
+                return 1
+                ;;
+            esac
+            printf '%s' "$FAKE_ALARM_STATUS"
+            return 0
+            ;;
+          *)
+            echo "unexpected request path: $path" >&2
+            return 1
+            ;;
+        esac
       }
 
+      # mock 이 남기는 위반 사유를 실패 시 보여주기 위해 stderr 를 파일로 받는다.
       FAKE_HEALTH_OK="$health_ok" FAKE_ALARM_STATUS="$alarm_status" \
-        verify_alarm_endpoint >/dev/null 2>&1
+        verify_alarm_endpoint >/dev/null 2>"$endpoint_stderr"
     )
   }
 
   if ! run_endpoint_case true 401; then
     echo "A healthy api server that rejects an invalid token must pass verification." >&2
+    cat "$endpoint_stderr" >&2
     exit 1
   fi
   # 애플리케이션이 기동하지 않았다면 tcp 가 열려 있어도 통과하면 안 된다.
