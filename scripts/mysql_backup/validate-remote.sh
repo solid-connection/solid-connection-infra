@@ -2,6 +2,8 @@
 set -Eeuo pipefail
 
 readonly CONFIG_FILE="/etc/solid-connection/mysql-backup.env"
+# lib/backup-common.sh 의 ALARM_PATH 와 같은 값이어야 합니다. 설치 전에는 그 파일을 읽을 수 없어 여기에 둡니다.
+readonly ALARM_PATH="/internal/alarms/db-backup"
 readonly VALIDATE_BIN="/usr/local/libexec/solid-connection/mysql-backup-validate"
 
 if ((EUID != 0)); then
@@ -137,18 +139,21 @@ for alarm_health_port in ${ALARM_API_HEALTH_PORTS}; do
 done
 if [[ "$alarm_api_healthy" != "true" ]]; then
   echo "No api server responded as UP on the management ports: $ALARM_API_HEALTH_PORTS" >&2
-  echo "Check whether the api server is running and whether the management port convention has changed." >&2
+  echo "Check whether the api server is running, whether the security group allows these ports" >&2
+  echo "from this instance, and whether the management port convention has changed." >&2
   exit 1
 fi
 
 alarm_endpoint_deployed=false
+alarm_last_status="none"
 for alarm_port in ${ALARM_API_PORTS}; do
   alarm_status="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 \
-    -X POST "http://${ALARM_API_HOST}:${alarm_port}/internal/alarms/db-backup" \
+    -X POST "http://${ALARM_API_HOST}:${alarm_port}${ALARM_PATH}" \
     -H "Content-Type: application/json" \
     -H "X-Internal-Alarm-Token: invalid-token-for-validation" \
     -d '{"type":"DUMP_FAILED","instanceId":"validation","occurredAt":"2026-01-01T00:00:00Z"}' 2>/dev/null)" \
     || alarm_status="000"
+  alarm_last_status="$alarm_status"
   if [[ "$alarm_status" == "401" ]]; then
     alarm_endpoint_deployed=true
     echo "Alarm endpoint is deployed on app port $alarm_port."
@@ -157,7 +162,8 @@ for alarm_port in ${ALARM_API_PORTS}; do
 done
 if [[ "$alarm_endpoint_deployed" != "true" ]]; then
   echo "The alarm endpoint did not reject an invalid token on any app port: $ALARM_API_PORTS" >&2
-  echo "The endpoint may not be deployed on the running api server yet." >&2
+  echo "The last response status was $alarm_last_status." >&2
+  echo "A 404 or 500 means the api server in service does not have the endpoint yet; deploy it first." >&2
   exit 1
 fi
 

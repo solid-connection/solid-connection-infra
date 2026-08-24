@@ -633,61 +633,79 @@ test_backup_alarm_detail_escaping() {
 }
 
 # 명시적으로 알린 실패를 EXIT 트랩이 기본 유형으로 다시 보내지 않는지 본다.
-# 전송에 실패한 경우까지 확인한다. 이때 재전송이 일어나면 유형과 원인이 함께 뒤바뀐다.
+# 전송에 실패한 경우까지 확인한다. 이때 재전송이 일어나면 알림 유형과 원인이 함께 뒤바뀐다.
 test_unexpected_failure_alarm_is_sent_once() {
-  local run_case
-  run_case() {
+  run_failure_alarm_case() {
     local delivery_succeeds="$1"
     local send_log="$2"
     (
       export MYSQL_BACKUP_BUCKET="test-bucket"
       export MYSQL_DATABASE="test_database"
       export AWS_REGION="ap-northeast-2"
+      # shellcheck source=../lib/backup-common.sh
+      source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+
       export ALARM_API_HOST="172.31.0.10"
       export ALARM_API_PORTS="8080 9080"
       export ALARM_API_TOKEN="test-token"
-      # shellcheck source=../lib/backup-common.sh
-      source "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh"
+      export DELIVERY_SUCCEEDS="$delivery_succeeds"
+      export SEND_LOG="$send_log"
 
       instance_id() { printf '%s' 'i-test'; }
       # 실제 스크립트와 같은 순서로 트랩을 걸어 기본 유형이 덮어쓰는지 확인한다.
       trap 'alarm_on_unexpected_failure BINLOG_UPLOAD_FAILED' EXIT
+      # 요청 본문에서 알림 유형만 뽑아 기록해, 시도 횟수와 유형을 함께 확인할 수 있게 한다.
       curl() {
         local argument
+        local payload=""
+        local expects_payload=false
+        local is_alarm_request=false
+
         for argument in "$@"; do
+          if [[ "$expects_payload" == "true" ]]; then
+            payload="$argument"
+            expects_payload=false
+            continue
+          fi
           case "$argument" in
-            *"$ALARM_PATH")
-              printf '%s\n' "$SEND_LOG_TYPE" >>"$SEND_LOG"
-              ;;
+            -d) expects_payload=true ;;
+            *"$ALARM_PATH") is_alarm_request=true ;;
           esac
         done
+        if [[ "$is_alarm_request" == "true" ]]; then
+          payload="${payload#*\"type\":\"}"
+          printf '%s\n' "${payload%%\"*}" >>"$SEND_LOG"
+        fi
         [[ "$DELIVERY_SUCCEEDS" == "true" ]]
       }
 
-      DELIVERY_SUCCEEDS="$delivery_succeeds" SEND_LOG="$send_log" \
-        SEND_LOG_TYPE="attempt" \
-        fail_with_alarm BINLOG_GAP_DETECTED "binlog chain is broken" 2>/dev/null
+      fail_with_alarm BINLOG_GAP_DETECTED "binlog chain is broken" 2>/dev/null
     )
   }
 
   # 전송에 성공하면 한 번만 시도한다.
   local delivered_log="$TEST_ROOT/alarm-send-delivered"
   : >"$delivered_log"
-  run_case true "$delivered_log" || true
+  run_failure_alarm_case true "$delivered_log" || true
   assert_equals \
-    "1" \
-    "$(wc -l <"$delivered_log" | tr -d ' ')" \
+    "BINLOG_GAP_DETECTED" \
+    "$(cat "$delivered_log")" \
     "an already reported failure must not be alarmed twice"
 
   # 전송에 실패해도 트랩이 기본 유형으로 다시 보내지 않는다.
-  # 포트 두 개를 모두 시도하므로 시도 횟수는 2회이고, 3회 이상이면 트랩이 재전송한 것이다.
+  # 포트 두 개를 모두 시도하므로 2회이고, 유형은 처음 알린 것이 그대로 유지되어야 한다.
   local failed_log="$TEST_ROOT/alarm-send-failed"
   : >"$failed_log"
-  run_case false "$failed_log" || true
+  run_failure_alarm_case false "$failed_log" || true
+  # 유형이 바뀌는 것이 근본 문제이므로 먼저 확인한다.
+  assert_equals \
+    "BINLOG_GAP_DETECTED" \
+    "$(sort -u "$failed_log")" \
+    "an undelivered explicit alarm must not be replaced by the default type"
   assert_equals \
     "2" \
     "$(wc -l <"$failed_log" | tr -d ' ')" \
-    "an undelivered explicit alarm must not be resent with the default type"
+    "an undelivered explicit alarm must not be resent beyond the port fallback"
 }
 
 test_binlog_delay_alarm_threshold() {
@@ -737,9 +755,29 @@ test_binlog_delay_alarm_threshold() {
 }
 
 # 설치 검증이 tcp 연결이 아니라 health 응답과 401 응답을 확인하는지 본다.
+# 설치 전 검증은 공용 라이브러리를 읽을 수 없어 알림 경로를 각자 들고 있다.
+# 두 값이 어긋나면 설치 검증이 배포되지 않은 경로를 호출해 잘못된 판정을 내리므로 같은지 확인한다.
+test_alarm_path_is_consistent() {
+  local lib_alarm_path
+  local remote_alarm_path
+
+  lib_alarm_path="$(sed -n 's/^readonly ALARM_PATH="\(.*\)"$/\1/p' \
+    "$PROJECT_DIR/scripts/mysql_backup/lib/backup-common.sh")"
+  remote_alarm_path="$(sed -n 's/^readonly ALARM_PATH="\(.*\)"$/\1/p' \
+    "$PROJECT_DIR/scripts/mysql_backup/validate-remote.sh")"
+
+  if [[ -z "$lib_alarm_path" ]]; then
+    echo "Could not read ALARM_PATH from the shared library." >&2
+    exit 1
+  fi
+  assert_equals \
+    "$lib_alarm_path" \
+    "$remote_alarm_path" \
+    "the pre-installation validator must call the same alarm path as the shared library"
+}
+
 test_verify_alarm_endpoint() {
-  local run_case
-  run_case() {
+  run_endpoint_case() {
     local health_ok="$1"
     local alarm_status="$2"
     (
@@ -779,18 +817,23 @@ test_verify_alarm_endpoint() {
     )
   }
 
-  if ! run_case true 401; then
+  if ! run_endpoint_case true 401; then
     echo "A healthy api server that rejects an invalid token must pass verification." >&2
     exit 1
   fi
   # 애플리케이션이 기동하지 않았다면 tcp 가 열려 있어도 통과하면 안 된다.
-  if run_case false 401; then
+  if run_endpoint_case false 401; then
     echo "Verification must fail when no management port reports UP." >&2
     exit 1
   fi
   # 경로가 배포되지 않아 404 가 오면 통과하면 안 된다.
-  if run_case true 404; then
+  if run_endpoint_case true 404; then
     echo "Verification must fail when the alarm endpoint is not deployed." >&2
+    exit 1
+  fi
+  # 실제로 미배포 서버는 정적 리소스 처리로 넘어가 500 을 반환하므로 이 경우도 막아야 한다.
+  if run_endpoint_case true 500; then
+    echo "Verification must fail when the api server answers the alarm path with 500." >&2
     exit 1
   fi
 }
@@ -849,4 +892,5 @@ test_unexpected_failure_alarm_is_sent_once
 test_binlog_delay_alarm_threshold
 test_alarm_target_validation
 test_verify_alarm_endpoint
+test_alarm_path_is_consistent
 echo "All MySQL backup tests passed."

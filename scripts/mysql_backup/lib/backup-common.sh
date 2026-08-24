@@ -305,12 +305,14 @@ alarm_if_upload_delayed() {
 
 # 알림 경로가 실제로 동작하는지 확인합니다.
 # - management 포트의 health 로 api 서버가 기동했는지 확인합니다. tcp 연결만으로는 앱 기동 여부를 알 수 없습니다.
-# - 잘못된 토큰으로 알림 경로를 호출해 401 이 오는지 확인합니다. 경로가 배포되지 않았다면 404 가 옵니다.
+# - 잘못된 토큰으로 알림 경로를 호출해 401 이 오는지 확인합니다.
+#   경로가 배포되지 않은 서버는 핸들러를 찾지 못해 정적 리소스로 처리하다 500 을 반환합니다.
 # - 토큰 값이 실제로 맞는지는 알림을 발생시키지 않고 확인할 수 없어 검증 대상에서 제외합니다.
 verify_alarm_endpoint() {
   local port
   local health_response
   local status
+  local last_status="none"
   local is_healthy=false
   local is_endpoint_deployed=false
 
@@ -326,7 +328,8 @@ verify_alarm_endpoint() {
   done
   if [[ "$is_healthy" != "true" ]]; then
     echo "No api server responded as UP on the management ports: $ALARM_API_HEALTH_PORTS" >&2
-    echo "Check whether the api server is running and whether the management port convention has changed." >&2
+    echo "Check whether the api server is running, whether the security group allows these ports" >&2
+    echo "from this instance, and whether the management port convention has changed." >&2
     return 1
   fi
 
@@ -337,6 +340,7 @@ verify_alarm_endpoint() {
       -H "X-Internal-Alarm-Token: invalid-token-for-validation" \
       -d '{"type":"DUMP_FAILED","instanceId":"validation","occurredAt":"2026-01-01T00:00:00Z"}' 2>/dev/null)" \
       || status="000"
+    last_status="$status"
     if [[ "$status" == "401" ]]; then
       is_endpoint_deployed=true
       echo "Alarm endpoint is deployed on app port $port."
@@ -345,7 +349,8 @@ verify_alarm_endpoint() {
   done
   if [[ "$is_endpoint_deployed" != "true" ]]; then
     echo "The alarm endpoint did not reject an invalid token on any app port: $ALARM_API_PORTS" >&2
-    echo "The endpoint may not be deployed on the running api server yet." >&2
+    echo "The last response status was $last_status." >&2
+    echo "A 404 or 500 means the api server in service does not have the endpoint yet; deploy it first." >&2
     return 1
   fi
 }

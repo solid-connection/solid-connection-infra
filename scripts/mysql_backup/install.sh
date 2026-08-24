@@ -9,8 +9,9 @@ readonly INSTALL_BIN_DIR="/usr/local/libexec/solid-connection"
 readonly CONFIG_DIR="/etc/solid-connection"
 readonly CONFIG_FILE="$CONFIG_DIR/mysql-backup.env"
 readonly INSTALL_LOCK_FILE="/run/lock/solid-connection-mysql-backup-install.lock"
-# 진행 중인 백업 작업을 기다리는 상한입니다. binlog는 최대 4분, dump는 최대 2시간 실행됩니다.
-# dump가 도는 중이라면 기다리기보다 중단하고 다른 시각에 다시 실행하는 편이 낫습니다.
+# 대기 상한입니다. 진행 중인 백업 작업과 다른 설치 트랜잭션을 기다릴 때 함께 사용합니다.
+# binlog는 최대 4분, dump는 최대 2시간 실행되므로, dump가 도는 중이라면
+# 기다리기보다 중단하고 다른 시각에 다시 실행하는 편이 낫습니다.
 readonly LOCK_WAIT_SECONDS=300
 readonly -a TIMER_UNITS=(
   mysql-backup-binlog.timer
@@ -192,7 +193,12 @@ transaction_started=true
 # binlog는 다음 주기가 따라잡지만 dump는 하루 한 번이라 그날 복구 기준점이 사라집니다.
 # 락을 잡기 전에 타이머를 멈춰 새 발화를 막고, 멈춘 사이에 놓친 발화는 Persistent=true 로
 # 타이머를 다시 켜는 시점에 즉시 실행되게 합니다. 실패하면 cleanup 이 이전 상태로 되돌립니다.
-systemctl stop "${TIMER_UNITS[@]}"
+# 최초 설치에는 유닛 파일이 아직 없어 stop 이 실패하므로, 앞에서 확인한 활성 상태를 기준으로 멈춥니다.
+for timer in "${TIMER_UNITS[@]}"; do
+  if [[ "${TIMER_WAS_ACTIVE[$timer]}" == "true" ]]; then
+    systemctl stop "$timer"
+  fi
+done
 
 # 이미 실행 중인 dump/binlog가 끝난 뒤 교체하여 한 작업에서 서로 다른 버전이 섞이지 않게 합니다.
 # 무기한 대기하면 SSM 세션이 유휴로 끊겨 원인을 알 수 없는 실패가 되므로 상한을 둡니다.
@@ -206,6 +212,7 @@ if ! flock -w "$LOCK_WAIT_SECONDS" 198; then
 fi
 if ! flock -w "$LOCK_WAIT_SECONDS" 199; then
   echo "A binlog backup is still running after ${LOCK_WAIT_SECONDS}s; aborting the installation." >&2
+  echo "A binlog job normally finishes within 4 minutes, so check whether it is stuck." >&2
   exit 1
 fi
 
