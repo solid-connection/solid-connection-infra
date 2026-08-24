@@ -16,8 +16,9 @@ readonly LOCK_WAIT_SECONDS=300
 readonly BINLOG_TIMER_UNIT="mysql-backup-binlog.timer"
 readonly DUMP_TIMER_UNIT="mysql-backup-dump.timer"
 readonly DUMP_SERVICE_UNIT="mysql-backup-dump.service"
-# systemd 는 Persistent 타이머의 마지막 트리거 시각을 이 파일의 mtime 으로 기록합니다.
-readonly DUMP_TIMER_STAMP_FILE="/var/lib/systemd/timers/stamp-$DUMP_TIMER_UNIT"
+# dump 스크립트가 manifest 업로드까지 성공한 뒤에만 기록하는 파일입니다.
+# 존재하면 S3 에 복구 가능한 dump 가 최소 하나 있다는 뜻입니다.
+readonly DUMP_SUCCESS_STATE_FILE="/mnt/mysql-data/mysql-backup/state/last-dump-success"
 readonly -a TIMER_UNITS=(
   "$BINLOG_TIMER_UNIT"
   "$DUMP_TIMER_UNIT"
@@ -103,8 +104,6 @@ declare -A TIMER_WAS_ENABLED=()
 declare -A TIMER_WAS_ACTIVE=()
 transaction_started=false
 transaction_committed=false
-# 타이머를 켜면 systemd 가 stamp 파일을 만들 수 있어, 켜기 전에 확인해 둡니다.
-dump_was_triggered=false
 
 register_target() {
   local target="$1"
@@ -198,10 +197,6 @@ for timer in "${TIMER_UNITS[@]}"; do
   register_target "/etc/systemd/system/timers.target.wants/$timer"
 done
 
-if [[ -e "$DUMP_TIMER_STAMP_FILE" ]]; then
-  dump_was_triggered=true
-fi
-
 register_target "$INSTALL_LIB_DIR/backup-common.sh"
 for script in "$CANDIDATE_DIR"/bin/*; do
   register_target "$INSTALL_BIN_DIR/$(basename "$script")"
@@ -263,16 +258,24 @@ transaction_committed=true
 # Persistent 는 마지막 트리거 기록이 있어야 놓친 발화를 따라잡습니다.
 # 기록이 없는 최초 설치에서는 다음 03:00 까지 dump 가 생기지 않는데,
 # 기준점이 되는 dump 가 없으면 binlog 만으로는 재생 시작점이 없어 복구할 수 없습니다.
-# 그래서 첫 dump 는 스케줄을 기다리지 않고 바로 만듭니다.
-# 이미 dump 기록이 있으면 유효한 기준점이 있으므로 설치가 스케줄에 개입하지 않습니다.
-if [[ "$dump_was_triggered" != "true" ]]; then
-  echo "No previous dump was recorded; creating the first dump now so that binlogs have a recovery base."
+# 그래서 성공한 dump 가 없으면 스케줄을 기다리지 않고 바로 만듭니다.
+#
+# 판단 기준으로 타이머 stamp 파일을 쓰면 양쪽으로 어긋납니다.
+# 발화 사실만 기록해 dump 성공을 보장하지 않고, 서비스를 수동으로 시작하면
+# 갱신되지 않아 다음 발화 전까지 재설치마다 dump 가 쌓입니다.
+# Object Lock 이 걸린 버킷에서는 그렇게 쌓인 객체를 14일 동안 지울 수 없습니다.
+if [[ ! -s "$DUMP_SUCCESS_STATE_FILE" ]]; then
+  echo "No successful dump is recorded; creating the first dump now so that binlogs have a recovery base."
   # dump 는 최대 2시간까지 실행될 수 있어 완료를 기다리지 않습니다.
-  # 설치는 이미 커밋되었으므로, 트리거가 실패해도 설치를 실패로 만들지 않고 사실만 알립니다.
+  # --no-block 은 시작 요청까지만 확인하므로 실행 결과는 알림과 journalctl 로 확인합니다.
+  # 실패하면 성공 기록이 남지 않아 다음 설치가 다시 시도합니다.
+  # 설치는 이미 커밋되었으므로, 요청이 실패해도 설치를 실패로 만들지 않고 사실만 알립니다.
   if ! systemctl start --no-block "$DUMP_SERVICE_UNIT"; then
-    echo "Failed to start the first dump. Until it succeeds there is no recovery base," >&2
-    echo "so run it manually or wait for the next scheduled run at 03:00 KST." >&2
+    echo "Failed to request the first dump. There is no recovery base until it succeeds," >&2
+    echo "so run 'systemctl start $DUMP_SERVICE_UNIT' manually or wait for 03:00 KST." >&2
   fi
+else
+  echo "A successful dump is already recorded; leaving the backup schedule untouched."
 fi
 
 systemctl --no-pager --full status "${TIMER_UNITS[@]}"
