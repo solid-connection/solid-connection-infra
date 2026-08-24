@@ -121,6 +121,17 @@ atomic_install() {
   mv -Tf "$temporary" "$target"
 }
 
+# 타이머를 켜기 전에 백업 작업 락을 놓습니다.
+# Persistent=true 로 즉시 트리거되는 작업도 같은 락을 얻어야 하므로,
+# 설치가 락을 쥔 채 타이머를 켜면 그 작업이 그대로 건너뛰어집니다.
+# 아직 열지 않은 상태에서도 호출될 수 있어 실패를 무시합니다.
+# fd 는 닫지 않습니다. exec 에 붙인 리다이렉션은 셸 전체에 영구 적용되어
+# 이후 오류 메시지가 사라지고, 락은 flock -u 만으로 해제됩니다.
+release_backup_locks() {
+  flock -u 198 2>/dev/null || true
+  flock -u 199 2>/dev/null || true
+}
+
 rollback_installation() {
   local target
   local backup
@@ -158,6 +169,7 @@ cleanup() {
   if [[ "$transaction_started" == "true" && "$transaction_committed" != "true" ]]; then
     echo "Installation failed; restoring the previous backup pipeline." >&2
     set +e
+    release_backup_locks
     rollback_installation
   fi
   rm -rf -- "$TRANSACTION_DIR"
@@ -230,6 +242,10 @@ done
 
 systemd-analyze verify "${INSTALLED_UNIT_TARGETS[@]}"
 systemctl daemon-reload
+
+# 교체가 끝났고 타이머도 아직 꺼져 있어 이 시점부터는 락이 필요하지 않습니다.
+release_backup_locks
+
 systemctl enable --now "${TIMER_UNITS[@]}"
 transaction_committed=true
 
