@@ -1,8 +1,13 @@
 [Unit]
 Description=Upload a consistent MySQL dump to S3
-Requires=docker.service mnt-mysql\x2ddata.mount
-After=docker.service mnt-mysql\x2ddata.mount network-online.target
+Requires=docker.service
+After=docker.service network-online.target
 Wants=network-online.target
+# 마운트 유닛 이름을 직접 참조하면 systemd-analyze verify 가 찾지 못해 설치가 중단됩니다.
+# fstab 항목은 systemd-fstab-generator 가 /run/systemd/generator 에 만들고,
+# verify 는 그 산출물을 보지 않기 때문입니다.
+# RequiresMountsFor 는 경로에서 마운트 유닛을 유도해 Requires 와 After 를 함께 걸어 줍니다.
+RequiresMountsFor=/mnt/mysql-data
 # TimeoutStartSec와 재시도 간격을 포함한 네 번의 시작을 하나의 제한 구간으로 묶습니다.
 StartLimitIntervalSec=12h
 StartLimitBurst=4
