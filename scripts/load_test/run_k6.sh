@@ -5,6 +5,9 @@ TERRAFORM_DIR="environment/load_test"
 VAR_FILE="../../config/secrets/load_test.tfvars"
 LOCAL_K6_DIR="config/load-test/k6"
 K6_SCRIPT="whole-user-flow.js"
+GENERATE_BRUNO_SCRIPT="false"
+BRUNO_COLLECTION_DIR=""
+BRUNO_GENERATOR="scripts/load_test/generate_bruno_k6.py"
 TARGET_BASE_URL=""
 PROMETHEUS_REMOTE_WRITE_URL=""
 K6_VUS="10"
@@ -23,6 +26,9 @@ Options:
   --var-file PATH                   Default: ../../config/secrets/load_test.tfvars
   --local-k6-dir PATH               Default: config/load-test/k6
   --script FILE                     Default: whole-user-flow.js
+  --generate-bruno-script           Generate the selected script from a Bruno collection
+  --bruno-collection-dir PATH       Required when --generate-bruno-script is used
+  --bruno-generator PATH            Default: scripts/load_test/generate_bruno_k6.py
   --target-base-url URL             Default: Terraform output load_test_target_base_url
   --prometheus-remote-write-url URL Default: Terraform output k6_prometheus_remote_write_url
   --vus VALUE                       Default: 10
@@ -41,6 +47,9 @@ while [[ $# -gt 0 ]]; do
     --var-file) VAR_FILE="$2"; shift 2 ;;
     --local-k6-dir) LOCAL_K6_DIR="$2"; shift 2 ;;
     --script) K6_SCRIPT="$2"; shift 2 ;;
+    --generate-bruno-script) GENERATE_BRUNO_SCRIPT="true"; shift ;;
+    --bruno-collection-dir) BRUNO_COLLECTION_DIR="$2"; shift 2 ;;
+    --bruno-generator) BRUNO_GENERATOR="$2"; shift 2 ;;
     --target-base-url) TARGET_BASE_URL="$2"; shift 2 ;;
     --prometheus-remote-write-url) PROMETHEUS_REMOTE_WRITE_URL="$2"; shift 2 ;;
     --vus) K6_VUS="$2"; shift 2 ;;
@@ -65,6 +74,20 @@ require_command terraform
 require_command aws
 require_command jq
 require_command base64
+require_command find
+if [[ "$GENERATE_BRUNO_SCRIPT" == "true" ]]; then
+  require_command python3
+fi
+
+if [[ "$GENERATE_BRUNO_SCRIPT" == "true" && -z "$BRUNO_COLLECTION_DIR" ]]; then
+  echo "--bruno-collection-dir is required when --generate-bruno-script is used" >&2
+  exit 1
+fi
+
+if [[ "$GENERATE_BRUNO_SCRIPT" == "true" && ! -f "$BRUNO_GENERATOR" ]]; then
+  echo "Bruno k6 generator was not found: $BRUNO_GENERATOR" >&2
+  exit 1
+fi
 
 tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
@@ -216,13 +239,21 @@ PROMETHEUS_REMOTE_WRITE_URL="${PROMETHEUS_REMOTE_WRITE_URL:-$tf_prometheus_remot
 
 wait_for_ssm "$load_generator_instance_id"
 
-for relative_path in \
-  "createPost.json" \
-  "updatePost.json" \
-  "whole-user-flow.js" \
-  "set_up_xk6.sh"; do
+if [[ "$GENERATE_BRUNO_SCRIPT" == "true" ]]; then
+  python3 "$BRUNO_GENERATOR" \
+    --collection-dir "$BRUNO_COLLECTION_DIR" \
+    --output "${LOCAL_K6_DIR}/${K6_SCRIPT}"
+fi
+
+if [[ ! -f "${LOCAL_K6_DIR}/${K6_SCRIPT}" ]]; then
+  echo "Missing k6 script: ${LOCAL_K6_DIR}/${K6_SCRIPT}" >&2
+  exit 1
+fi
+
+while IFS= read -r -d '' source_path; do
+  relative_path="${source_path#"$LOCAL_K6_DIR"/}"
   sync_file "$load_generator_instance_id" "$load_generator_k6_dir" "$relative_path"
-done
+done < <(find "$LOCAL_K6_DIR" -type f \( -name '*.js' -o -name '*.ts' -o -name '*.json' -o -name '*.sh' \) -print0)
 
 run_commands_json="$(jq -cn \
   --arg k6_dir "$load_generator_k6_dir" \

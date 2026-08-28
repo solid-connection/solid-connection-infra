@@ -8,7 +8,7 @@ on:
         required: true
         default: true
         type: boolean
-      destroy_rds:
+      destroy_infra:
         description: "Destroy load test Terraform stack"
         required: true
         default: true
@@ -58,7 +58,7 @@ jobs:
             args+=(--restore-stage-dev)
           fi
 
-          if [ "${{ inputs.destroy_rds }}" != "true" ]; then
+          if [ "${{ inputs.destroy_infra }}" != "true" ]; then
             args+=(--skip-terraform-destroy)
           fi
 
