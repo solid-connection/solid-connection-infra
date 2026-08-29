@@ -38,9 +38,21 @@ data "aws_subnet" "stage_api" {
   id = data.aws_instance.stage_api.subnet_id
 }
 
+data "aws_caller_identity" "current" {}
+
 locals {
-  load_test_db_subnet_id = var.load_test_db_subnet_id != null ? var.load_test_db_subnet_id : data.aws_instance.stage_api.subnet_id
+  load_test_db_subnet_id = var.load_test_db_subnet_id != null ? var.load_test_db_subnet_id : data.aws_instance.prod_db.subnet_id
   load_test_db_ami_id    = var.load_test_db_ami_id != null ? var.load_test_db_ami_id : data.aws_instance.prod_db.ami
+  load_test_db_instance_profile_name = (
+    var.load_test_db_instance_profile_name != null
+    ? var.load_test_db_instance_profile_name
+    : aws_iam_instance_profile.load_test_db.name
+  )
+  load_test_db_ssm_endpoint_services = toset([
+    "ec2messages",
+    "ssm",
+    "ssmmessages",
+  ])
 
   source_security_group_ids = setunion(
     data.aws_instance.prod_api.vpc_security_group_ids,
@@ -50,6 +62,96 @@ locals {
 
 data "aws_subnet" "load_test_db" {
   id = local.load_test_db_subnet_id
+}
+
+resource "aws_iam_role" "load_test_db" {
+  name = "solid-connection-load-test-db"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+        Action = "sts:AssumeRole"
+      },
+    ]
+  })
+
+  tags = {
+    Name = "solid-connection-load-test-db"
+  }
+}
+
+resource "aws_iam_role_policy_attachment" "load_test_db_ssm" {
+  role       = aws_iam_role.load_test_db.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+resource "aws_iam_role_policy" "load_test_db_read" {
+  name = "LoadTestDbReadPolicy"
+  role = aws_iam_role.load_test_db.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadLoadTestDatasourceParameters"
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+        ]
+        Resource = "arn:aws:ssm:ap-northeast-2:${data.aws_caller_identity.current.account_id}:parameter${var.load_test_parameter_prefix}/*"
+      },
+      {
+        Sid    = "DecryptLoadTestDatasourceParameters"
+        Effect = "Allow"
+        Action = [
+          "kms:Decrypt",
+        ]
+        Resource = "*"
+        Condition = {
+          StringEquals = {
+            "kms:ViaService" = "ssm.ap-northeast-2.amazonaws.com"
+          }
+        }
+      },
+      {
+        Sid    = "ListMysqlBackupDumpObjects"
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketLocation",
+          "s3:ListBucket",
+        ]
+        Resource = "arn:aws:s3:::${var.mysql_backup_bucket_name}"
+        Condition = {
+          StringLike = {
+            "s3:prefix" = "dump/*"
+          }
+        }
+      },
+      {
+        Sid    = "ReadMysqlBackupDumpObjects"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+        ]
+        Resource = "arn:aws:s3:::${var.mysql_backup_bucket_name}/dump/*"
+      },
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "load_test_db" {
+  name = "solid-connection-load-test-db"
+  role = aws_iam_role.load_test_db.name
+
+  tags = {
+    Name = "solid-connection-load-test-db"
+  }
 }
 
 data "aws_ami" "ubuntu" {
@@ -80,9 +182,7 @@ resource "aws_security_group" "load_test_db" {
   }
 
   tags = {
-    Name    = "solid-connection-load-test-db-sg"
-    Project = "solid-connection"
-    Env     = "load_test"
+    Name = "solid-connection-load-test-db-sg"
   }
 }
 
@@ -91,11 +191,50 @@ resource "aws_security_group_rule" "load_test_db_mysql" {
 
   type                     = "ingress"
   description              = "MySQL from prod/stage API server"
-  from_port                = 3306
-  to_port                  = 3306
+  from_port                = var.load_test_db_port
+  to_port                  = var.load_test_db_port
   protocol                 = "tcp"
   security_group_id        = aws_security_group.load_test_db.id
   source_security_group_id = each.value
+}
+
+resource "aws_security_group" "load_test_db_ssm_endpoint" {
+  name        = "sc-load-test-db-ssm-endpoint-sg"
+  description = "Security group for load test DB SSM interface endpoints"
+  vpc_id      = data.aws_subnet.load_test_db.vpc_id
+
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.load_test_db.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "solid-connection-load-test-db-ssm-endpoint-sg"
+  }
+}
+
+resource "aws_vpc_endpoint" "load_test_db_ssm" {
+  for_each = local.load_test_db_ssm_endpoint_services
+
+  vpc_id              = data.aws_subnet.load_test_db.vpc_id
+  service_name        = "com.amazonaws.ap-northeast-2.${each.key}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = [local.load_test_db_subnet_id]
+  security_group_ids  = [aws_security_group.load_test_db_ssm_endpoint.id]
+  private_dns_enabled = true
+
+  tags = {
+    Name = "solid-connection-load-test-db-${each.key}-endpoint"
+  }
 }
 
 resource "aws_ebs_volume" "load_test_db_data" {
@@ -105,9 +244,7 @@ resource "aws_ebs_volume" "load_test_db_data" {
   encrypted         = true
 
   tags = {
-    Name    = "${var.load_test_db_instance_name}-data"
-    Project = "solid-connection"
-    Env     = "load_test"
+    Name = "${var.load_test_db_instance_name}-data"
   }
 }
 
@@ -117,7 +254,7 @@ resource "aws_instance" "load_test_db" {
   subnet_id                   = local.load_test_db_subnet_id
   vpc_security_group_ids      = [aws_security_group.load_test_db.id]
   associate_public_ip_address = var.load_test_db_associate_public_ip
-  iam_instance_profile        = var.load_test_db_instance_profile_name
+  iam_instance_profile        = local.load_test_db_instance_profile_name
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -136,6 +273,7 @@ resource "aws_instance" "load_test_db" {
     aws_region                 = "ap-northeast-2"
     data_volume_id             = aws_ebs_volume.load_test_db_data.id
     db_name                    = var.db_name
+    db_port                    = var.load_test_db_port
     load_test_parameter_prefix = var.load_test_parameter_prefix
     mysql_backup_bucket_name   = var.mysql_backup_bucket_name
     mysql_config_content       = file("${path.module}/../../modules/app_stack/templates/mysql_tuning.cnf")
@@ -144,9 +282,7 @@ resource "aws_instance" "load_test_db" {
   user_data_replace_on_change = true
 
   tags = {
-    Name    = var.load_test_db_instance_name
-    Project = "solid-connection"
-    Env     = "load_test"
+    Name = var.load_test_db_instance_name
   }
 }
 
@@ -218,6 +354,6 @@ resource "aws_instance" "load_generator" {
 resource "aws_ssm_parameter" "load_test_datasource_url" {
   name      = "${var.load_test_parameter_prefix}/spring.datasource.url"
   type      = "String"
-  value     = "jdbc:mysql://${aws_instance.load_test_db.private_ip}:3306/${var.db_name}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
+  value     = "jdbc:mysql://${aws_instance.load_test_db.private_ip}:${var.load_test_db_port}/${var.db_name}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
   overwrite = true
 }

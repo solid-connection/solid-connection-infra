@@ -166,3 +166,10 @@ Stop workflow 동작:
 - prod/stage EC2는 `Name` tag로 조회합니다.
 - prod/load-test DB 계정 정보는 Parameter Store에서 읽습니다.
 - load-test MySQL EC2 보안 그룹은 prod/stage API EC2 보안 그룹에서 들어오는 MySQL 접근만 허용합니다.
+- Load-test DB defaults updated after PR review:
+  - `load_test_db_ami_id`: `ami-0501a03cd31b53e82` (`solid-connection-db-mysql-8.4.8-arm64-ubuntu24.04-awscli-recovery-tools`).
+  - `load_test_db_instance_type`: `t4g.medium`, matching the arm64 DB AMI family.
+  - `load_test_db_subnet_id`: when omitted, the prod DB subnet is used so the existing S3 Gateway Endpoint route is available.
+  - `load_test_db_associate_public_ip`: remains `false`; SSM access is provided through Terraform-managed SSM interface endpoints.
+  - `load_test_db_instance_profile_name`: when omitted, Terraform uses the dedicated load-test DB instance profile it creates.
+  - `load_test_db_port`: defaults to `3306` and is used by the security group, Docker port mapping, Terraform output, and datasource URL.

@@ -43,6 +43,17 @@ variable "db_name" {
   default     = "solid_connection"
 }
 
+variable "load_test_db_port" {
+  description = "Load-test MySQL EC2 listener port."
+  type        = number
+  default     = 3306
+
+  validation {
+    condition     = var.load_test_db_port >= 1 && var.load_test_db_port <= 65535
+    error_message = "load_test_db_port must be between 1 and 65535."
+  }
+}
+
 variable "load_test_db_username_parameter_name" {
   description = "Deprecated. datasource username은 load-test Parameter Store 경로에서 직접 읽습니다."
   type        = string
@@ -93,18 +104,18 @@ variable "load_test_db_instance_name" {
 variable "load_test_db_instance_type" {
   description = "load-test MySQL EC2 인스턴스 타입입니다."
   type        = string
-  default     = "t3.medium"
+  default     = "t4g.medium"
 }
 
 variable "load_test_db_ami_id" {
   description = "load-test MySQL EC2 AMI ID입니다. null이면 prod MySQL EC2의 AMI를 사용합니다."
   type        = string
-  default     = null
+  default     = "ami-0501a03cd31b53e82"
   nullable    = true
 }
 
 variable "load_test_db_subnet_id" {
-  description = "load-test MySQL EC2를 배치할 subnet ID입니다. null이면 stage API EC2와 같은 subnet을 사용합니다."
+  description = "load-test MySQL EC2를 배치할 subnet ID입니다. null이면 prod DB EC2와 같은 subnet을 사용합니다."
   type        = string
   default     = null
   nullable    = true
@@ -117,9 +128,10 @@ variable "load_test_db_associate_public_ip" {
 }
 
 variable "load_test_db_instance_profile_name" {
-  description = "load-test MySQL EC2에 연결할 IAM instance profile 이름입니다. SSM Parameter Store 조회와 S3 백업 조회 권한이 필요합니다."
+  description = "Deprecated override. null이면 Terraform이 생성한 load-test DB 전용 IAM instance profile을 사용합니다."
   type        = string
-  default     = "SolidConnectionParameterStoreReadProfile"
+  default     = null
+  nullable    = true
 }
 
 variable "mysql_backup_bucket_name" {

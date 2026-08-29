@@ -4,6 +4,7 @@ set -Eeuo pipefail
 AWS_REGION="${aws_region}"
 DATA_VOLUME_ID="${data_volume_id}"
 DB_NAME="${db_name}"
+DB_PORT="${db_port}"
 LOAD_TEST_PARAMETER_PREFIX="${load_test_parameter_prefix}"
 MYSQL_BACKUP_BUCKET="${mysql_backup_bucket_name}"
 
@@ -38,6 +39,11 @@ if ! [[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
   exit 1
 fi
 
+if ! [[ "$DB_PORT" =~ ^[0-9]+$ ]] || [ "$DB_PORT" -lt 1 ] || [ "$DB_PORT" -gt 65535 ]; then
+  echo "Invalid DB_PORT: $DB_PORT" >&2
+  exit 1
+fi
+
 systemctl enable docker
 systemctl start docker
 
@@ -48,6 +54,8 @@ elif systemctl list-unit-files | grep -q '^amazon-ssm-agent.service'; then
   systemctl enable amazon-ssm-agent.service || true
   systemctl restart amazon-ssm-agent.service || true
 fi
+
+systemctl disable --now mysql-backup-dump.timer mysql-backup-binlog.timer 2>/dev/null || true
 
 for _ in $(seq 1 120); do
   if [ -e "$DATA_VOLUME_DEVICE" ]; then
@@ -119,7 +127,7 @@ docker rm -f mysql-server 2>/dev/null || true
 docker run -d \
   --name mysql-server \
   --restart always \
-  -p 3306:3306 \
+  -p "$DB_PORT":3306 \
   -v "$MYSQL_DATA_DIR:/var/lib/mysql" \
   -v /etc/mysql/conf.d:/etc/mysql/conf.d \
   -e MYSQL_ROOT_PASSWORD="$DB_APP_PASSWORD" \
@@ -160,8 +168,11 @@ if [ ! -f "$READY_FILE" ]; then
     --bucket "$MYSQL_BACKUP_BUCKET" \
     --prefix dump/ \
     --region "$AWS_REGION" \
-    --query 'reverse(sort_by(Contents[?ends_with(Key, `manifest.json`)], &LastModified))[0].Key' \
-    --output text)"
+    --query 'Contents[?ends_with(Key, `manifest.json`)].[LastModified,Key]' \
+    --output text \
+    | sort -k1,1 \
+    | tail -n 1 \
+    | awk '{print $2}')"
 
   if [ -z "$latest_manifest_key" ] || [ "$latest_manifest_key" = "None" ]; then
     echo "No MySQL dump manifest was found in s3://$MYSQL_BACKUP_BUCKET/dump/." >&2
@@ -175,8 +186,46 @@ if [ ! -f "$READY_FILE" ]; then
     --only-show-errors \
     --no-progress
 
-  dump_file="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["dumpFile"])' "$manifest_file")"
-  dump_sha256="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["sha256"])' "$manifest_file")"
+  mapfile -t manifest_values < <(python3 - "$manifest_file" "$DB_NAME" <<'PY'
+import json
+import re
+import sys
+
+manifest_path = sys.argv[1]
+expected_database = sys.argv[2]
+
+try:
+    with open(manifest_path, encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"Failed to read MySQL dump manifest: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+checks = [
+    (manifest.get("schemaVersion") == 1, "schemaVersion must be 1"),
+    (manifest.get("type") == "mysql-full-dump", "type must be mysql-full-dump"),
+    (manifest.get("database") == expected_database, f"database must be {expected_database}"),
+]
+
+dump_file = manifest.get("dumpFile")
+if not isinstance(dump_file, str) or "/" in dump_file or dump_file in {"", ".", ".."}:
+    checks.append((False, "dumpFile must be a file name"))
+
+sha256 = manifest.get("sha256")
+if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+    checks.append((False, "sha256 must be a 64-character hex string"))
+
+errors = [message for valid, message in checks if not valid]
+if errors:
+    print("Invalid MySQL dump manifest: " + "; ".join(errors), file=sys.stderr)
+    sys.exit(1)
+
+print(dump_file)
+print(sha256.lower())
+PY
+  )
+  dump_file="$${manifest_values[0]}"
+  dump_sha256="$${manifest_values[1]}"
   dump_prefix="$${latest_manifest_key%/manifest.json}"
   dump_path="$restore_dir/$dump_file"
 

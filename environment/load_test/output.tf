@@ -5,7 +5,7 @@ output "load_test_db_endpoint" {
 
 output "load_test_db_port" {
   description = "Load-test MySQL EC2 port"
-  value       = 3306
+  value       = var.load_test_db_port
 }
 
 output "load_test_db_instance_id" {
