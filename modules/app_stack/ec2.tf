@@ -98,6 +98,12 @@ resource "null_resource" "update_nginx" {
     }))
   }
 
+  # 인스턴스가 교체되면 새 인스턴스에는 nginx 가 없으므로 설정 스크립트를 다시 실행합니다.
+  # triggers 대신 lifecycle 을 쓰는 이유: triggers 는 state 에 저장되어 키를 추가하는 것만으로 재실행이 발생합니다.
+  lifecycle {
+    replace_triggered_by = [aws_instance.api_server]
+  }
+
   provisioner "local-exec" {
     interpreter = ["bash", "-c"]
     command     = <<-EOT
