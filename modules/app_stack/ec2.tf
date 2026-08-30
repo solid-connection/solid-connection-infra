@@ -100,8 +100,10 @@ resource "null_resource" "update_nginx" {
 
   # 인스턴스가 교체되면 새 인스턴스에는 nginx 가 없으므로 설정 스크립트를 다시 실행합니다.
   # triggers 대신 lifecycle 을 쓰는 이유: triggers 는 state 에 저장되어 키를 추가하는 것만으로 재실행이 발생합니다.
+  # 리소스 전체가 아니라 id 를 참조하는 이유: 리소스 참조는 in-place update 에도 반응하지만,
+  # 속성 참조는 값이 바뀔 때만 반응하므로 인스턴스 교체에만 발동합니다.
   lifecycle {
-    replace_triggered_by = [aws_instance.api_server]
+    replace_triggered_by = [aws_instance.api_server.id]
   }
 
   provisioner "local-exec" {
@@ -109,6 +111,27 @@ resource "null_resource" "update_nginx" {
     command     = <<-EOT
       set -euo pipefail
       INSTANCE_ID='${aws_instance.api_server.id}'
+
+      # 인스턴스가 교체된 직후에는 SSM 에이전트가 아직 등록되지 않아
+      # send-command 가 InvalidInstanceId 로 즉시 실패합니다. 등록될 때까지 기다립니다.
+      PING_STATUS=""
+      SSM_ATTEMPTS=0
+      while [ "$SSM_ATTEMPTS" -lt 60 ]; do
+        PING_STATUS=$(aws ssm describe-instance-information \
+          --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+          --query "InstanceInformationList[0].PingStatus" \
+          --output text 2>/dev/null || echo "None")
+        if [ "$PING_STATUS" = "Online" ]; then
+          break
+        fi
+        SSM_ATTEMPTS=$((SSM_ATTEMPTS + 1))
+        sleep 10
+      done
+      if [ "$PING_STATUS" != "Online" ]; then
+        echo "SSM agent not registered within 600s (last status: $PING_STATUS)" >&2
+        exit 1
+      fi
+
       COMMAND_ID=$(aws ssm send-command \
         --instance-ids "$INSTANCE_ID" \
         --document-name "AWS-RunShellScript" \
