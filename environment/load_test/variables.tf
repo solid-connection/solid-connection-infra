@@ -128,10 +128,9 @@ variable "load_test_db_associate_public_ip" {
 }
 
 variable "load_test_db_instance_profile_name" {
-  description = "Deprecated override. null이면 Terraform이 생성한 load-test DB 전용 IAM instance profile을 사용합니다."
+  description = "사전에 생성된 load-test MySQL EC2 전용 IAM instance profile 이름입니다. Terraform은 IAM을 생성하지 않고 이 이름만 EC2에 연결합니다."
   type        = string
-  default     = null
-  nullable    = true
+  default     = "solid-connection-load-test-db"
 }
 
 variable "mysql_backup_bucket_name" {

@@ -5,8 +5,11 @@ AWS_REGION="${aws_region}"
 DATA_VOLUME_ID="${data_volume_id}"
 DB_NAME="${db_name}"
 DB_PORT="${db_port}"
+EC2MESSAGES_ENDPOINT_HOST="${ec2messages_endpoint_host}"
 LOAD_TEST_PARAMETER_PREFIX="${load_test_parameter_prefix}"
 MYSQL_BACKUP_BUCKET="${mysql_backup_bucket_name}"
+SSM_ENDPOINT_HOST="${ssm_endpoint_host}"
+SSMMESSAGES_ENDPOINT_HOST="${ssmmessages_endpoint_host}"
 
 export AWS_REGION
 export AWS_DEFAULT_REGION="$AWS_REGION"
@@ -46,6 +49,34 @@ fi
 
 systemctl enable docker
 systemctl start docker
+
+mkdir -p /etc/amazon/ssm
+python3 - "$AWS_REGION" "$SSM_ENDPOINT_HOST" "$SSMMESSAGES_ENDPOINT_HOST" "$EC2MESSAGES_ENDPOINT_HOST" <<'PY'
+import json
+import os
+import sys
+
+region, ssm_endpoint, ssmmessages_endpoint, ec2messages_endpoint = sys.argv[1:]
+config_path = "/etc/amazon/ssm/amazon-ssm-agent.json"
+
+try:
+    with open(config_path, encoding="utf-8") as config_file:
+        config = json.load(config_file)
+except (FileNotFoundError, json.JSONDecodeError):
+    config = {}
+
+config.setdefault("Agent", {})["Region"] = region
+config.setdefault("Ssm", {})["Endpoint"] = ssm_endpoint
+config.setdefault("Mgs", {})["Region"] = region
+config["Mgs"]["Endpoint"] = ssmmessages_endpoint
+config.setdefault("Mds", {})["Endpoint"] = ec2messages_endpoint
+
+tmp_path = f"{config_path}.tmp"
+with open(tmp_path, "w", encoding="utf-8") as config_file:
+    json.dump(config, config_file, indent=2)
+    config_file.write("\n")
+os.replace(tmp_path, config_path)
+PY
 
 if systemctl list-unit-files | grep -q '^snap.amazon-ssm-agent.amazon-ssm-agent.service'; then
   systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
@@ -101,6 +132,7 @@ ssm_get() {
     --name "$1" \
     --with-decryption \
     --region "$AWS_REGION" \
+    --endpoint-url "https://$SSM_ENDPOINT_HOST" \
     --query "Parameter.Value" \
     --output text
 }

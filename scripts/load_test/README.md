@@ -171,5 +171,5 @@ Stop workflow 동작:
   - `load_test_db_instance_type`: `t4g.medium`, matching the arm64 DB AMI family.
   - `load_test_db_subnet_id`: when omitted, the prod DB subnet is used so the existing S3 Gateway Endpoint route is available.
   - `load_test_db_associate_public_ip`: remains `false`; SSM access is provided through Terraform-managed SSM interface endpoints.
-  - `load_test_db_instance_profile_name`: when omitted, Terraform uses the dedicated load-test DB instance profile it creates.
+  - `load_test_db_instance_profile_name`: defaults to the pre-created dedicated `solid-connection-load-test-db` instance profile. Terraform does not create IAM resources.
   - `load_test_db_port`: defaults to `3306` and is used by the security group, Docker port mapping, Terraform output, and datasource URL.
