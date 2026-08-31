@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 
@@ -9,6 +10,7 @@ HTTP_METHODS = ("get", "post", "put", "patch", "delete", "options", "head")
 LOGIN_PATH = "/auth/email/sign-in"
 TOKEN_ENDING_PATHS = ("/auth/sign-out", "/auth/quit")
 DESTRUCTIVE_PATHS = ("/auth/quit",)
+SUPPORTED_BODY_TYPES = ("none", "json", "multipartForm")
 
 
 def brace_delta(line):
@@ -159,6 +161,8 @@ def parse_request(path, collection_dir):
         body["raw"] = clean_body_json(blocks["body:json"][0])
     elif body_type == "multipartForm" and "body:multipart-form" in blocks:
         body["fields"] = parse_multipart(blocks["body:multipart-form"][0])
+    elif body_type not in SUPPORTED_BODY_TYPES:
+        print(f"Warning: unsupported Bruno body type in {path}: {body_type}", file=sys.stderr)
 
     meta = parse_meta(blocks)
     relative_path = path.relative_to(collection_dir).as_posix()
@@ -184,7 +188,7 @@ def order_key(request):
     url = request["url"]
     if LOGIN_PATH in url:
         return (0, request["relativePath"], request["seq"])
-    if any(path in url for path in TOKEN_ENDING_PATHS):
+    if any(token_ending_path in url for token_ending_path in TOKEN_ENDING_PATHS):
         return (2, request["relativePath"], request["seq"])
     return (1, request["relativePath"], request["seq"])
 
@@ -203,7 +207,7 @@ def load_requests(collection_dir, include_external, include_destructive):
             continue
         if not include_external and not request["url"].startswith("{{URL}}"):
             continue
-        if not include_destructive and any(path in request["url"] for path in DESTRUCTIVE_PATHS):
+        if not include_destructive and any(destructive_path in request["url"] for destructive_path in DESTRUCTIVE_PATHS):
             continue
         requests.append(request)
 
@@ -215,6 +219,7 @@ def render_k6(requests):
     """Render parsed Bruno requests as a self-contained k6 JavaScript file."""
     regular_requests = [request for request in requests if LOGIN_PATH not in request["url"]]
     payload = json.dumps(regular_requests, ensure_ascii=True, indent=2)
+    token_ending_paths = json.dumps(TOKEN_ENDING_PATHS, ensure_ascii=True)
 
     return f"""import http from 'k6/http';
 import {{ sleep, check }} from 'k6';
@@ -226,6 +231,7 @@ const failOn5xx = (__ENV.BRUNO_FAIL_ON_5XX || 'true') !== 'false';
 const loginEmailTemplate = __ENV.BRUNO_LOGIN_EMAIL_TEMPLATE || 'user{{{{VU}}}}@example.com';
 const loginPassword = __ENV.BRUNO_LOGIN_PASSWORD || 'password';
 const preloadedAccessToken = __ENV.BRUNO_ACCESS_TOKEN || '';
+const tokenEndingPaths = {token_ending_paths};
 
 const now = new Date();
 const kst = new Date(now.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 16);
@@ -378,10 +384,19 @@ function buildParams(request, variables) {{
   }};
 }}
 
+function isTokenEndingRequest(request) {{
+  return tokenEndingPaths.some((path) => request.url.includes(path));
+}}
+
 export default function () {{
   const accessToken = login();
 
   for (const request of requests) {{
+    if (preloadedAccessToken && isTokenEndingRequest(request)) {{
+      console.warn(`Skipping token-ending request while BRUNO_ACCESS_TOKEN is preloaded: ${{request.method}} ${{request.url}}`);
+      continue;
+    }}
+
     const variables = buildVariables(request, accessToken);
     const url = resolveUrl(request, variables);
     const params = buildParams(request, variables);

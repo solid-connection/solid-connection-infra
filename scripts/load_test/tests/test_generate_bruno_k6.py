@@ -1,8 +1,10 @@
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from pathlib import Path
 
-from scripts.load_test.generate_bruno_k6 import load_requests, render_k6
+from scripts.load_test.generate_bruno_k6 import load_requests, parse_request, render_k6
 
 
 class GenerateBrunoK6Test(unittest.TestCase):
@@ -123,6 +125,51 @@ delete {
         self.assertIn('"relativePath": "users/me.bru"', script)
         self.assertNotIn('"relativePath": "auth/sign-in.bru"', script)
         self.assertIn("/auth/email/sign-in", script)
+
+    def test_parse_request_warns_for_unsupported_body_type(self):
+        """Unsupported Bruno body types should be surfaced during generation."""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = self.write_bru(
+                root,
+                "users/import.bru",
+                """
+post {
+  url: {{URL}}/users/import
+  body: formUrlEncoded
+  auth: inherit
+}
+""",
+            )
+
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                request = parse_request(path, root)
+
+            self.assertEqual(request["body"], {"type": "formUrlEncoded"})
+            self.assertIn("unsupported Bruno body type", stderr.getvalue())
+
+    def test_render_k6_skips_token_ending_requests_with_preloaded_token(self):
+        """Pre-issued token mode should not send sign-out or quit requests."""
+        requests = [
+            {
+                "name": "POST /auth/sign-out",
+                "displayName": "sign out",
+                "relativePath": "auth/sign-out.bru",
+                "method": "POST",
+                "url": "{{URL}}/auth/sign-out",
+                "auth": "inherit",
+                "body": {"type": "none"},
+                "vars": {},
+                "seq": 1,
+            },
+        ]
+
+        script = render_k6(requests)
+
+        self.assertIn("const tokenEndingPaths =", script)
+        self.assertIn("preloadedAccessToken && isTokenEndingRequest(request)", script)
+        self.assertIn("Skipping token-ending request", script)
 
 
 if __name__ == "__main__":

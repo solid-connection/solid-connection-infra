@@ -49,8 +49,8 @@ variable "load_test_db_port" {
   default     = 3306
 
   validation {
-    condition     = var.load_test_db_port >= 1 && var.load_test_db_port <= 65535
-    error_message = "load_test_db_port must be between 1 and 65535."
+    condition     = var.load_test_db_port == floor(var.load_test_db_port) && var.load_test_db_port >= 1 && var.load_test_db_port <= 65535
+    error_message = "load_test_db_port must be an integer between 1 and 65535."
   }
 }
 

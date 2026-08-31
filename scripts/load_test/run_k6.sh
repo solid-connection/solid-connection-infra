@@ -5,6 +5,7 @@ TERRAFORM_DIR="environment/load_test"
 VAR_FILE="../../config/secrets/load_test.tfvars"
 LOCAL_K6_DIR="config/load-test/k6"
 K6_SCRIPT="whole-user-flow.js"
+SCRIPT_PROVIDED="false"
 GENERATE_BRUNO_SCRIPT="false"
 BRUNO_COLLECTION_DIR=""
 BRUNO_GENERATOR="scripts/load_test/generate_bruno_k6.py"
@@ -14,6 +15,8 @@ K6_VUS="10"
 K6_ITERATIONS="10"
 K6_MAX_DURATION="15m"
 SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-3600}"
+SSM_COMMAND_PAYLOAD_MAX_BYTES="${SSM_COMMAND_PAYLOAD_MAX_BYTES:-60000}"
+SSM_FILE_SYNC_CHUNK_BYTES="${SSM_FILE_SYNC_CHUNK_BYTES:-48000}"
 DESTROY_RUNNER="true"
 REBUILD_K6="false"
 
@@ -46,7 +49,7 @@ while [[ $# -gt 0 ]]; do
     --terraform-dir) TERRAFORM_DIR="$2"; shift 2 ;;
     --var-file) VAR_FILE="$2"; shift 2 ;;
     --local-k6-dir) LOCAL_K6_DIR="$2"; shift 2 ;;
-    --script) K6_SCRIPT="$2"; shift 2 ;;
+    --script) K6_SCRIPT="$2"; SCRIPT_PROVIDED="true"; shift 2 ;;
     --generate-bruno-script) GENERATE_BRUNO_SCRIPT="true"; shift ;;
     --bruno-collection-dir) BRUNO_COLLECTION_DIR="$2"; shift 2 ;;
     --bruno-generator) BRUNO_GENERATOR="$2"; shift 2 ;;
@@ -75,8 +78,15 @@ require_command aws
 require_command jq
 require_command base64
 require_command find
+require_command fold
+require_command gzip
+require_command wc
 if [[ "$GENERATE_BRUNO_SCRIPT" == "true" ]]; then
   require_command python3
+fi
+
+if [[ "$GENERATE_BRUNO_SCRIPT" == "true" && "$SCRIPT_PROVIDED" != "true" ]]; then
+  K6_SCRIPT="bruno-all-apis.js"
 fi
 
 if [[ "$GENERATE_BRUNO_SCRIPT" == "true" && -z "$BRUNO_COLLECTION_DIR" ]]; then
@@ -194,8 +204,23 @@ wait_for_ssm() {
   done
 }
 
-file_base64() {
-  base64 "$1" | tr -d '\n'
+file_gzip_base64() {
+  gzip -c "$1" | base64 | tr -d '\n'
+}
+
+json_size_bytes() {
+  printf '%s' "$1" | wc -c
+}
+
+ensure_ssm_payload_size() {
+  local commands_json="$1"
+  local size_bytes
+  size_bytes="$(json_size_bytes "$commands_json")"
+
+  if (( size_bytes > SSM_COMMAND_PAYLOAD_MAX_BYTES )); then
+    echo "SSM command payload is too large: ${size_bytes} bytes, max ${SSM_COMMAND_PAYLOAD_MAX_BYTES} bytes" >&2
+    exit 1
+  fi
 }
 
 sync_file() {
@@ -209,19 +234,67 @@ sync_file() {
     exit 1
   fi
 
+  local target_path="${target_dir}/${relative_path}"
+  local encoded_content
+  encoded_content="$(file_gzip_base64 "$source_path")"
+
   local commands_json
   commands_json="$(jq -cn \
-    --arg target "${target_dir}/${relative_path}" \
-    --arg content "$(file_base64 "$source_path")" \
+    --arg target "$target_path" \
+    --arg content "$encoded_content" \
     '{
       commands: [
         "set -euo pipefail",
         "mkdir -p \"$(dirname \"\($target)\")\"",
-        "printf %s \($content | @sh) | base64 -d > \($target | @sh)"
+        "printf %s \($content | @sh) | base64 -d | gzip -dc > \($target | @sh)"
       ]
     }')"
 
-  send_ssm_command "$instance_id" "Sync ${relative_path} to load generator" "$commands_json"
+  if (( $(json_size_bytes "$commands_json") <= SSM_COMMAND_PAYLOAD_MAX_BYTES )); then
+    send_ssm_command "$instance_id" "Sync ${relative_path} to load generator" "$commands_json"
+    return
+  fi
+
+  local remote_tmp="${target_path}.b64.part"
+  commands_json="$(jq -cn \
+    --arg target "$target_path" \
+    --arg remote_tmp "$remote_tmp" \
+    '{
+      commands: [
+        "set -euo pipefail",
+        "mkdir -p \"$(dirname \"\($target)\")\"",
+        "rm -f \($remote_tmp | @sh)"
+      ]
+    }')"
+  ensure_ssm_payload_size "$commands_json"
+  send_ssm_command "$instance_id" "Prepare chunked sync for ${relative_path}" "$commands_json"
+
+  while IFS= read -r chunk; do
+    commands_json="$(jq -cn \
+      --arg remote_tmp "$remote_tmp" \
+      --arg chunk "$chunk" \
+      '{
+        commands: [
+          "set -euo pipefail",
+          "printf %s \($chunk | @sh) >> \($remote_tmp | @sh)"
+        ]
+      }')"
+    ensure_ssm_payload_size "$commands_json"
+    send_ssm_command "$instance_id" "Sync chunk for ${relative_path}" "$commands_json"
+  done < <(printf '%s' "$encoded_content" | fold -w "$SSM_FILE_SYNC_CHUNK_BYTES")
+
+  commands_json="$(jq -cn \
+    --arg target "$target_path" \
+    --arg remote_tmp "$remote_tmp" \
+    '{
+      commands: [
+        "set -euo pipefail",
+        "base64 -d < \($remote_tmp | @sh) | gzip -dc > \($target | @sh)",
+        "rm -f \($remote_tmp | @sh)"
+      ]
+    }')"
+  ensure_ssm_payload_size "$commands_json"
+  send_ssm_command "$instance_id" "Finish chunked sync for ${relative_path}" "$commands_json"
 }
 
 terraform -chdir="$TERRAFORM_DIR" init

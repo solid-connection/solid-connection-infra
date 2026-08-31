@@ -154,7 +154,10 @@ ${mysql_config_content}
 CNFEOF
 chmod 644 /etc/mysql/conf.d/tuning.cnf
 
-docker image inspect mysql:8.4.8 >/dev/null 2>&1 || docker pull mysql:8.4.8
+docker image inspect mysql:8.4.8 >/dev/null 2>&1 || {
+  echo "Required Docker image is not preloaded in the AMI: mysql:8.4.8" >&2
+  exit 1
+}
 docker rm -f mysql-server 2>/dev/null || true
 docker run -d \
   --name mysql-server \

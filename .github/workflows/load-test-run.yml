@@ -97,6 +97,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      - name: Test Bruno k6 generator
+        run: python -m unittest scripts.load_test.tests.test_generate_bruno_k6
+
       - name: Run k6 on load generator
         env:
           VUS: ${{ inputs.vus }}
