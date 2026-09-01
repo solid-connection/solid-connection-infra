@@ -27,7 +27,7 @@ Terraform은 datasource URL만 load-test DB EC2 private IP로 갱신합니다. u
 주요 확인값:
 
 - `prod_db_instance_name`: prod MySQL EC2의 Name tag입니다. `load_test_db_ami_id`가 비어 있으면 이 EC2의 AMI를 사용합니다.
-- `load_test_db_instance_profile_name`: load-test MySQL EC2에 연결할 IAM instance profile 이름입니다. 기본값은 `SolidConnectionParameterStoreReadProfile`입니다.
+- `load_test_db_instance_profile_name`: load-test MySQL EC2에 연결할 사전 생성 IAM instance profile 이름입니다. 기본값은 `solid-connection-load-test-db`이며, Terraform은 IAM 리소스를 생성하지 않습니다.
 - `mysql_backup_bucket_name`: prod MySQL dump manifest와 dump 파일이 저장되는 S3 bucket 이름입니다. 기본값은 `solid-connection-prod-mysql-backup`입니다.
 - `/solid-connection/loadtest/spring.datasource.username`: 앱이 loadtest profile에서 읽는 DB username입니다.
 - `/solid-connection/loadtest/spring.datasource.password`: 앱이 loadtest profile에서 읽는 SecureString입니다.
