@@ -137,8 +137,12 @@ if ! nginx -t; then
   echo "Nginx config test failed. Rolling back." >&2
   if [ -n "$BACKUP_PATH" ]; then
     mv "$BACKUP_PATH" "$CONF_PATH"
-    nginx -t || echo "Rollback verification also failed." >&2
+  else
+    # 되돌릴 기존 설정이 없는 첫 적용이라면, 방금 만든 설정과 링크를 제거한다.
+    # 그대로 두면 default 링크까지 지워진 상태라 다음 restart 때 nginx 가 기동하지 못한다.
+    rm -f /etc/nginx/sites-enabled/$CONF_NAME "$CONF_PATH"
   fi
+  nginx -t || echo "Rollback verification also failed." >&2
   exit 1
 fi
 
