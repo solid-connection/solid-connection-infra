@@ -50,32 +50,37 @@ fi
 systemctl enable docker
 systemctl start docker
 
-mkdir -p /etc/amazon/ssm
 python3 - "$AWS_REGION" "$SSM_ENDPOINT_HOST" "$SSMMESSAGES_ENDPOINT_HOST" "$EC2MESSAGES_ENDPOINT_HOST" <<'PY'
 import json
 import os
+from pathlib import Path
 import sys
 
 region, ssm_endpoint, ssmmessages_endpoint, ec2messages_endpoint = sys.argv[1:]
-config_path = "/etc/amazon/ssm/amazon-ssm-agent.json"
+config_paths = [Path("/etc/amazon/ssm/amazon-ssm-agent.json")]
+snap_config_dir = Path("/var/snap/amazon-ssm-agent/current")
+if snap_config_dir.is_dir():
+    config_paths.append(snap_config_dir / "amazon-ssm-agent.json")
 
-try:
-    with open(config_path, encoding="utf-8") as config_file:
-        config = json.load(config_file)
-except (FileNotFoundError, json.JSONDecodeError):
-    config = {}
+for config_path in config_paths:
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        config = {}
 
-config.setdefault("Agent", {})["Region"] = region
-config.setdefault("Ssm", {})["Endpoint"] = ssm_endpoint
-config.setdefault("Mgs", {})["Region"] = region
-config["Mgs"]["Endpoint"] = ssmmessages_endpoint
-config.setdefault("Mds", {})["Endpoint"] = ec2messages_endpoint
+    config.setdefault("Agent", {})["Region"] = region
+    config.setdefault("Ssm", {})["Endpoint"] = ssm_endpoint
+    config.setdefault("Mgs", {})["Region"] = region
+    config["Mgs"]["Endpoint"] = ssmmessages_endpoint
+    config.setdefault("Mds", {})["Endpoint"] = ec2messages_endpoint
 
-tmp_path = f"{config_path}.tmp"
-with open(tmp_path, "w", encoding="utf-8") as config_file:
-    json.dump(config, config_file, indent=2)
-    config_file.write("\n")
-os.replace(tmp_path, config_path)
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(f"{config_path}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as config_file:
+        json.dump(config, config_file, indent=2)
+        config_file.write("\n")
+    os.replace(tmp_path, config_path)
 PY
 
 if systemctl list-unit-files | grep -q '^snap.amazon-ssm-agent.amazon-ssm-agent.service'; then

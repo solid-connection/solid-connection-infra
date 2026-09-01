@@ -32,6 +32,11 @@ Terraform은 datasource URL만 load-test DB EC2 private IP로 갱신합니다. u
 - `/solid-connection/loadtest/spring.datasource.username`: 앱이 loadtest profile에서 읽는 DB username입니다.
 - `/solid-connection/loadtest/spring.datasource.password`: 앱이 loadtest profile에서 읽는 SecureString입니다.
 
+IAM 권한 사전 조건:
+
+- `solid-connection-load-test-db` instance profile의 role은 SSM managed instance 등록 권한, prod MySQL dump S3 bucket의 manifest/dump 읽기 권한, loadtest Parameter Store 경로의 `ssm:GetParameter` 및 SecureString 복호화에 필요한 KMS decrypt 권한이 필요합니다.
+- `AWS_LOAD_TEST_ROLE_ARN`이 가리키는 GitHub Actions role은 load-test DB EC2에 `solid-connection-load-test-db` role을 연결할 `iam:PassRole`, SSM interface endpoint 생성/수정/삭제/조회 권한, EBS volume 생성/연결/분리/삭제/수정 권한이 필요합니다.
+
 그 외 부하 테스트 설정값은 Terraform 기본값, GitHub Actions variable, workflow 입력값으로 처리합니다.
 
 ## Load Test Start
