@@ -56,9 +56,14 @@ resource "aws_instance" "api_server" {
 }
 
 locals {
-  nginx_script_b64 = base64encode(templatefile("${path.module}/scripts/nginx_setup.sh.tftpl", {
+  nginx_install_script_b64 = base64encode(templatefile("${path.module}/scripts/nginx_install.sh.tftpl", {
     domain_name    = var.domain_name
     email          = var.cert_email
+    conf_file_name = var.nginx_conf_name
+  }))
+
+  nginx_conf_script_b64 = base64encode(templatefile("${path.module}/scripts/nginx_conf.sh.tftpl", {
+    domain_name    = var.domain_name
     conf_file_name = var.nginx_conf_name
   }))
 
@@ -75,8 +80,13 @@ locals {
     alloy_version          = var.alloy_version
   }))
 
-  nginx_ssm_params = jsonencode({
-    commands         = ["cloud-init status --wait > /dev/null", "echo ${local.nginx_script_b64} | base64 -d | sudo bash"]
+  nginx_install_ssm_params = jsonencode({
+    commands         = ["cloud-init status --wait > /dev/null", "echo ${local.nginx_install_script_b64} | base64 -d | sudo bash"]
+    executionTimeout = ["3600"]
+  })
+
+  nginx_conf_ssm_params = jsonencode({
+    commands         = ["cloud-init status --wait > /dev/null", "echo ${local.nginx_conf_script_b64} | base64 -d | sudo bash"]
     executionTimeout = ["3600"]
   })
 
@@ -86,24 +96,17 @@ locals {
   })
 }
 
-# [리소스 1] Nginx 설정 변경 감지 및 실행
-resource "null_resource" "update_nginx" {
+# [리소스 1] Nginx 설치 및 인증서 확보
+# 설치가 이미 끝나 있으면 스크립트가 즉시 종료하므로 평상시에는 사실상 실행되지 않습니다.
+resource "null_resource" "install_nginx" {
   depends_on = [aws_instance.api_server]
 
   triggers = {
-    script_hash = sha256(templatefile("${path.module}/scripts/nginx_setup.sh.tftpl", {
+    script_hash = sha256(templatefile("${path.module}/scripts/nginx_install.sh.tftpl", {
       domain_name    = var.domain_name
       email          = var.cert_email
       conf_file_name = var.nginx_conf_name
     }))
-  }
-
-  # 인스턴스가 교체되면 새 인스턴스에는 nginx 가 없으므로 설정 스크립트를 다시 실행합니다.
-  # triggers 대신 lifecycle 을 쓰는 이유: triggers 는 state 에 저장되어 키를 추가하는 것만으로 재실행이 발생합니다.
-  # 리소스 전체가 아니라 id 를 참조하는 이유: 리소스 참조는 in-place update 에도 반응하지만,
-  # 속성 참조는 값이 바뀔 때만 반응하므로 인스턴스 교체에만 발동합니다.
-  lifecycle {
-    replace_triggered_by = [aws_instance.api_server.id]
   }
 
   provisioner "local-exec" {
@@ -135,7 +138,7 @@ resource "null_resource" "update_nginx" {
       COMMAND_ID=$(aws ssm send-command \
         --instance-ids "$INSTANCE_ID" \
         --document-name "AWS-RunShellScript" \
-        --parameters '${local.nginx_ssm_params}' \
+        --parameters '${local.nginx_install_ssm_params}' \
         --output text \
         --query "Command.CommandId")
       ATTEMPTS=0
@@ -163,7 +166,76 @@ resource "null_resource" "update_nginx" {
   }
 }
 
-# [리소스 2] Side Infra 설정 변경 감지 및 실행
+# [리소스 2] Nginx 설정 변경 감지 및 실행
+# 설정 템플릿이 바뀌면 이 리소스만 재생성되어, 설치 작업 없이 conf 재작성과 reload 만 수행합니다.
+resource "null_resource" "update_nginx_conf" {
+  depends_on = [null_resource.install_nginx]
+
+  triggers = {
+    script_hash = sha256(templatefile("${path.module}/scripts/nginx_conf.sh.tftpl", {
+      domain_name    = var.domain_name
+      conf_file_name = var.nginx_conf_name
+    }))
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
+    command     = <<-EOT
+      set -euo pipefail
+      INSTANCE_ID='${aws_instance.api_server.id}'
+
+      # 인스턴스가 교체된 직후에는 SSM 에이전트가 아직 등록되지 않아
+      # send-command 가 InvalidInstanceId 로 즉시 실패합니다. 등록될 때까지 기다립니다.
+      PING_STATUS=""
+      SSM_ATTEMPTS=0
+      while [ "$SSM_ATTEMPTS" -lt 60 ]; do
+        PING_STATUS=$(aws ssm describe-instance-information \
+          --filters "Key=InstanceIds,Values=$INSTANCE_ID" \
+          --query "InstanceInformationList[0].PingStatus" \
+          --output text 2>/dev/null || echo "None")
+        if [ "$PING_STATUS" = "Online" ]; then
+          break
+        fi
+        SSM_ATTEMPTS=$((SSM_ATTEMPTS + 1))
+        sleep 10
+      done
+      if [ "$PING_STATUS" != "Online" ]; then
+        echo "SSM agent not registered within 600s (last status: $PING_STATUS)" >&2
+        exit 1
+      fi
+
+      COMMAND_ID=$(aws ssm send-command \
+        --instance-ids "$INSTANCE_ID" \
+        --document-name "AWS-RunShellScript" \
+        --parameters '${local.nginx_conf_ssm_params}' \
+        --output text \
+        --query "Command.CommandId")
+      ATTEMPTS=0
+      while [ "$ATTEMPTS" -lt 360 ]; do
+        STATUS=$(aws ssm get-command-invocation \
+          --command-id "$COMMAND_ID" \
+          --instance-id "$INSTANCE_ID" \
+          --query "Status" --output text 2>/dev/null || echo "Pending")
+        case "$STATUS" in
+          Success) exit 0 ;;
+          Failed|Cancelled|TimedOut|Undeliverable)
+            echo "SSM command $STATUS" >&2
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query "StandardErrorContent" --output text >&2
+            exit 1 ;;
+        esac
+        ATTEMPTS=$((ATTEMPTS + 1))
+        sleep 10
+      done
+      echo "SSM command timed out after 3600s" >&2
+      exit 1
+    EOT
+  }
+}
+
+# [리소스 3] Side Infra 설정 변경 감지 및 실행
 resource "null_resource" "update_side_infra" {
   depends_on = [aws_instance.api_server]
 
