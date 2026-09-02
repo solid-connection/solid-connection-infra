@@ -1,0 +1,155 @@
+#!/bin/bash
+
+set -e
+
+# --- variables setting ---
+DOMAIN="${domain_name}"
+CONF_NAME="${conf_file_name}"
+CONF_PATH="/etc/nginx/sites-available/$CONF_NAME"
+UPSTREAM_CONF="/etc/nginx/conf.d/upstream.conf"
+CERTBOT_WEBROOT="/var/www/certbot"
+CERT_FULLCHAIN="/etc/letsencrypt/live/$DOMAIN/fullchain.pem"
+CERT_PRIVKEY="/etc/letsencrypt/live/$DOMAIN/privkey.pem"
+
+echo "Start Nginx Config Update for $DOMAIN with config file: $CONF_NAME"
+
+# 인증서 확보는 nginx_install.sh 의 책임이다.
+# 인증서가 없으면 443 블록 때문에 nginx -t 가 실패하므로 설정을 쓰기 전에 중단한다.
+if [ ! -f "$CERT_FULLCHAIN" ] || [ ! -f "$CERT_PRIVKEY" ]; then
+  echo "Certificate not found for $DOMAIN. Run the nginx install script first." >&2
+  exit 1
+fi
+
+write_service_conf() {
+  cat <<EOF > $CONF_PATH
+map \$http_upgrade \$connection_upgrade {
+    default upgrade;
+    ''      '';
+}
+
+# 1차 차단: 도메인과 일치하지 않는 요청 차단 (IP 직접 접근, 알 수 없는 Host 헤더)
+# 응답 없이 연결을 즉시 종료하여 봇이 서버 존재를 인식하지 못하게 함
+server {
+    listen 80 default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen 443 ssl default_server;
+    server_name _;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    return 444;
+}
+
+server {
+    listen 80;
+    server_name $DOMAIN;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root $CERTBOT_WEBROOT;
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    server_name $DOMAIN;
+
+    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
+
+    client_max_body_size 10M;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256";
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 10m;
+    ssl_stapling on;
+    ssl_stapling_verify on;
+
+    # 2차 차단: 취약점 탐색용 정적 파일 확장자 요청 차단
+    # (\$|[/?]) 로 확장자 뒤에 /path 또는 ?query 가 붙는 우회 패턴도 차단
+    location ~* \.(php|asp|aspx|jsp|cgi|sql|bak|backup|config|ini|log|sh|xml|txt|html|htm)(\$|[/?]) {
+        return 444;
+    }
+
+    # .env, .env.production, .git 등 dotfile 변형 차단
+    location ~* (^|/)\.(env|git) {
+        return 444;
+    }
+
+    # 3차 차단: 내부 전용 API 는 VPC 내부에서 app 포트로 직접 호출하므로 외부 노출을 막는다
+    # DB EC2 의 백업 실패 알림은 8080/9080 직접 경로를 쓰므로 이 차단에 영향받지 않는다
+    location ^~ /internal {
+        return 444;
+    }
+
+    location / {
+        proxy_pass http://app_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection \$connection_upgrade;
+    }
+}
+EOF
+}
+
+# Create upstream config file only on first provisioning (initial active slot: blue on port 8080)
+# Blue-Green 배포 시 이 파일만 교체하고 nginx -s reload 로 트래픽 전환
+# 이미 존재하면 덮어쓰지 않음 — 재적용 시 현재 active 슬롯 유지
+if [ ! -f "$UPSTREAM_CONF" ]; then
+  cat <<UPSTREAM_EOF > $UPSTREAM_CONF
+upstream app_backend {
+    server 127.0.0.1:8080;
+}
+UPSTREAM_EOF
+fi
+
+# 적용에 실패하면 되돌릴 수 있도록 기존 설정을 백업해 둔다
+BACKUP_PATH=""
+if [ -f "$CONF_PATH" ]; then
+  BACKUP_PATH="$CONF_PATH.bak"
+  cp "$CONF_PATH" "$BACKUP_PATH"
+fi
+
+write_service_conf
+
+ln -sf $CONF_PATH /etc/nginx/sites-enabled/$CONF_NAME
+rm -f /etc/nginx/sites-enabled/default
+
+# 문법 검증에 실패하면 백업으로 되돌린다.
+# 검증 전에 파일을 이미 덮어썼기 때문에, 되돌리지 않으면 다음 reload 때 깨진 설정이 반영된다.
+if ! nginx -t; then
+  echo "Nginx config test failed. Rolling back." >&2
+  if [ -n "$BACKUP_PATH" ]; then
+    mv "$BACKUP_PATH" "$CONF_PATH"
+  else
+    # 되돌릴 기존 설정이 없는 첫 적용이라면, 방금 만든 설정과 링크를 제거한다.
+    # 그대로 두면 default 링크까지 지워진 상태라 다음 restart 때 nginx 가 기동하지 못한다.
+    rm -f /etc/nginx/sites-enabled/$CONF_NAME "$CONF_PATH"
+  fi
+  nginx -t || echo "Rollback verification also failed." >&2
+  exit 1
+fi
+
+systemctl reload nginx || systemctl restart nginx
+
+if [ -n "$BACKUP_PATH" ]; then
+  rm -f "$BACKUP_PATH"
+fi
+
+echo "Nginx config update complete!"
