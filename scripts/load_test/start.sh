@@ -7,7 +7,7 @@ DATABASE_NAME=""
 SWITCH_STAGE_TO_LOADTEST="false"
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
-SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-1800}"
+SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-3600}"
 SKIP_TERRAFORM_APPLY="false"
 
 usage() {
@@ -21,7 +21,7 @@ Options:
   --switch-stage-to-loadtest    Restart stage app through SSM with dev,loadtest profiles
   --stage-app-dir PATH          Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE    Default: docker-compose.dev.yml
-  --ssm-command-timeout-seconds Default: 1800
+  --ssm-command-timeout-seconds Default: 3600
   --skip-terraform-apply
   -h, --help
 EOF
@@ -115,6 +115,50 @@ send_ssm_command() {
   done
 }
 
+wait_for_ssm() {
+  local instance_id="$1"
+  local started_at
+  started_at="$(date +%s)"
+
+  while true; do
+    local ping_status
+    ping_status="$(aws ssm describe-instance-information \
+      --filters "Key=InstanceIds,Values=${instance_id}" \
+      --query "InstanceInformationList[0].PingStatus" \
+      --output text 2>/dev/null || true)"
+
+    if [[ "$ping_status" == "Online" ]]; then
+      break
+    fi
+
+    if (( $(date +%s) - started_at > SSM_COMMAND_TIMEOUT_SECONDS )); then
+      echo "SSM agent did not become online after ${SSM_COMMAND_TIMEOUT_SECONDS}s: ${instance_id}" >&2
+      exit 1
+    fi
+
+    sleep 10
+  done
+}
+
+wait_for_load_test_db_restore() {
+  local instance_id="$1"
+  local commands_json
+
+  commands_json="$(jq -cn \
+    '{
+      commands: [
+        "set -euo pipefail",
+        "READY_FILE=/opt/solid-connection/load-test-db-ready",
+        "cloud-init status --wait --long || { journalctl -u cloud-final --no-pager -n 200 || true; exit 1; }",
+        "test -f \"$READY_FILE\" || { echo \"Load-test DB ready marker was not created: $READY_FILE\" >&2; journalctl -u cloud-final --no-pager -n 200 || true; exit 1; }",
+        "cat \"$READY_FILE\""
+      ]
+    }')"
+
+  wait_for_ssm "$instance_id"
+  send_ssm_command "$instance_id" "Wait for load-test DB restore" "$commands_json"
+}
+
 if [[ "$SKIP_TERRAFORM_APPLY" != "true" ]]; then
   terraform -chdir="$TERRAFORM_DIR" init
   terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE"
@@ -122,11 +166,14 @@ fi
 
 stage_instance_id="$(tf_output stage_api_instance_id)"
 stage_public_ip="$(tf_output stage_api_public_ip)"
-loadtest_endpoint="$(tf_output load_test_rds_endpoint)"
-loadtest_port="$(tf_output load_test_rds_port)"
+loadtest_db_instance_id="$(tf_output load_test_db_instance_id)"
+loadtest_endpoint="$(tf_output load_test_db_endpoint)"
+loadtest_port="$(tf_output load_test_db_port)"
 loadtest_db_name="$(tf_output load_test_db_name)"
 
 DATABASE_NAME="${DATABASE_NAME:-$loadtest_db_name}"
+
+wait_for_load_test_db_restore "$loadtest_db_instance_id"
 
 if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
   stage_commands_json="$(jq -cn \
@@ -150,7 +197,7 @@ if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
 fi
 
 echo "Load test environment is ready."
-echo "RDS endpoint: ${loadtest_endpoint}:${loadtest_port}"
+echo "DB endpoint: ${loadtest_endpoint}:${loadtest_port}"
 echo "Load generator instance: created by Load Test Run"
 echo "Stage instance: ${stage_instance_id}"
 echo "Stage public IP: ${stage_public_ip}"

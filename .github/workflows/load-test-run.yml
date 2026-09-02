@@ -18,6 +18,19 @@ on:
         required: true
         default: "15m"
         type: string
+      test_mode:
+        description: "k6 test mode"
+        required: true
+        default: "bruno-all-apis"
+        type: choice
+        options:
+          - bruno-all-apis
+          - whole-user-flow
+      api_docs_ref:
+        description: "api-docs git ref used when test_mode is bruno-all-apis"
+        required: false
+        default: "main"
+        type: string
       target_base_url:
         description: "Target base URL. Empty uses Terraform default."
         required: false
@@ -60,6 +73,15 @@ jobs:
           token: ${{ secrets.GH_PAT }}
           persist-credentials: false
 
+      - uses: actions/checkout@v4
+        if: inputs.test_mode == 'bruno-all-apis'
+        with:
+          repository: solid-connection/api-docs
+          ref: ${{ inputs.api_docs_ref }}
+          path: api-docs
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.AWS_LOAD_TEST_ROLE_ARN }}
@@ -75,11 +97,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
+      - name: Test Bruno k6 generator
+        run: python -m unittest scripts.load_test.tests.test_generate_bruno_k6
+
       - name: Run k6 on load generator
         env:
           VUS: ${{ inputs.vus }}
           ITERATIONS: ${{ inputs.iterations }}
           MAX_DURATION: ${{ inputs.max_duration }}
+          TEST_MODE: ${{ inputs.test_mode }}
           TARGET_BASE_URL: ${{ inputs.target_base_url }}
           PROMETHEUS_REMOTE_WRITE_URL: ${{ inputs.prometheus_remote_write_url }}
         run: |
@@ -88,6 +114,23 @@ jobs:
             --iterations "$ITERATIONS"
             --max-duration "$MAX_DURATION"
           )
+
+          case "$TEST_MODE" in
+            bruno-all-apis)
+              args+=(
+                --script bruno-all-apis.js
+                --generate-bruno-script
+                --bruno-collection-dir "api-docs/Solid Connection"
+              )
+              ;;
+            whole-user-flow)
+              args+=(--script whole-user-flow.js)
+              ;;
+            *)
+              echo "::error::Invalid test_mode: $TEST_MODE"
+              exit 1
+              ;;
+          esac
 
           if [ -n "$TARGET_BASE_URL" ]; then
             args+=(--target-base-url "$TARGET_BASE_URL")

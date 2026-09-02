@@ -1,0 +1,299 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+AWS_REGION="${aws_region}"
+DATA_VOLUME_ID="${data_volume_id}"
+DB_NAME="${db_name}"
+DB_PORT="${db_port}"
+EC2MESSAGES_ENDPOINT_HOST="${ec2messages_endpoint_host}"
+LOAD_TEST_PARAMETER_PREFIX="${load_test_parameter_prefix}"
+MYSQL_BACKUP_BUCKET="${mysql_backup_bucket_name}"
+SSM_ENDPOINT_HOST="${ssm_endpoint_host}"
+SSMMESSAGES_ENDPOINT_HOST="${ssmmessages_endpoint_host}"
+
+export AWS_REGION
+export AWS_DEFAULT_REGION="$AWS_REGION"
+
+READY_FILE="/opt/solid-connection/load-test-db-ready"
+DATA_VOLUME_SERIAL="$(printf '%s' "$DATA_VOLUME_ID" | tr -d '-')"
+DATA_VOLUME_DEVICE="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$DATA_VOLUME_SERIAL"
+DATA_VOLUME_MOUNT="/mnt/mysql-data"
+MYSQL_DATA_DIR="$DATA_VOLUME_MOUNT/mysql"
+RESTORE_ROOT="$DATA_VOLUME_MOUNT/mysql-restore"
+
+require_command() {
+  command -v "$1" >/dev/null || {
+    echo "Required command is not installed: $1" >&2
+    exit 1
+  }
+}
+
+require_command aws
+require_command blkid
+require_command docker
+require_command gzip
+require_command mkfs.ext4
+require_command mountpoint
+require_command python3
+require_command sha256sum
+
+if ! [[ "$DB_NAME" =~ ^[A-Za-z0-9_]+$ ]]; then
+  echo "Invalid DB_NAME: $DB_NAME" >&2
+  exit 1
+fi
+
+if ! [[ "$DB_PORT" =~ ^[0-9]+$ ]] || [ "$DB_PORT" -lt 1 ] || [ "$DB_PORT" -gt 65535 ]; then
+  echo "Invalid DB_PORT: $DB_PORT" >&2
+  exit 1
+fi
+
+systemctl enable docker
+systemctl start docker
+
+python3 - "$AWS_REGION" "$SSM_ENDPOINT_HOST" "$SSMMESSAGES_ENDPOINT_HOST" "$EC2MESSAGES_ENDPOINT_HOST" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+
+region, ssm_endpoint, ssmmessages_endpoint, ec2messages_endpoint = sys.argv[1:]
+config_paths = [Path("/etc/amazon/ssm/amazon-ssm-agent.json")]
+snap_config_dir = Path("/var/snap/amazon-ssm-agent/current")
+if snap_config_dir.is_dir():
+    config_paths.append(snap_config_dir / "amazon-ssm-agent.json")
+
+for config_path in config_paths:
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (FileNotFoundError, json.JSONDecodeError):
+        config = {}
+
+    config.setdefault("Agent", {})["Region"] = region
+    config.setdefault("Ssm", {})["Endpoint"] = ssm_endpoint
+    config.setdefault("Mgs", {})["Region"] = region
+    config["Mgs"]["Endpoint"] = ssmmessages_endpoint
+    config.setdefault("Mds", {})["Endpoint"] = ec2messages_endpoint
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = Path(f"{config_path}.tmp")
+    with open(tmp_path, "w", encoding="utf-8") as config_file:
+        json.dump(config, config_file, indent=2)
+        config_file.write("\n")
+    os.replace(tmp_path, config_path)
+PY
+
+if systemctl list-unit-files | grep -q '^snap.amazon-ssm-agent.amazon-ssm-agent.service'; then
+  systemctl enable snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+  systemctl restart snap.amazon-ssm-agent.amazon-ssm-agent.service || true
+elif systemctl list-unit-files | grep -q '^amazon-ssm-agent.service'; then
+  systemctl enable amazon-ssm-agent.service || true
+  systemctl restart amazon-ssm-agent.service || true
+fi
+
+systemctl disable --now mysql-backup-dump.timer mysql-backup-binlog.timer 2>/dev/null || true
+
+for _ in $(seq 1 120); do
+  if [ -e "$DATA_VOLUME_DEVICE" ]; then
+    break
+  fi
+  sleep 2
+done
+
+if [ ! -e "$DATA_VOLUME_DEVICE" ]; then
+  echo "Data volume $DATA_VOLUME_ID was not attached within 240 seconds." >&2
+  ls -la /dev/disk/by-id >&2 || true
+  exit 1
+fi
+
+if ! blkid "$DATA_VOLUME_DEVICE" >/dev/null 2>&1; then
+  mkfs.ext4 -F "$DATA_VOLUME_DEVICE"
+fi
+
+mkdir -p "$DATA_VOLUME_MOUNT"
+DATA_VOLUME_UUID="$(blkid -s UUID -o value "$DATA_VOLUME_DEVICE")"
+
+awk -v mount="$DATA_VOLUME_MOUNT" '$2 != mount { print }' /etc/fstab > /etc/fstab.tmp
+printf 'UUID=%s %s ext4 defaults,nofail 0 2\n' "$DATA_VOLUME_UUID" "$DATA_VOLUME_MOUNT" >> /etc/fstab.tmp
+mv /etc/fstab.tmp /etc/fstab
+
+mountpoint -q "$DATA_VOLUME_MOUNT" || mount "$DATA_VOLUME_MOUNT"
+mountpoint -q "$DATA_VOLUME_MOUNT" || {
+  echo "Failed to mount data volume $DATA_VOLUME_ID at $DATA_VOLUME_MOUNT." >&2
+  exit 1
+}
+
+mkdir -p /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/10-require-mysql-data.conf <<EOF
+[Unit]
+RequiresMountsFor=$DATA_VOLUME_MOUNT
+After=local-fs.target
+EOF
+systemctl daemon-reload
+systemctl restart docker
+
+ssm_get() {
+  aws ssm get-parameter \
+    --name "$1" \
+    --with-decryption \
+    --region "$AWS_REGION" \
+    --endpoint-url "https://$SSM_ENDPOINT_HOST" \
+    --query "Parameter.Value" \
+    --output text
+}
+
+DB_APP_USER="$(ssm_get "$LOAD_TEST_PARAMETER_PREFIX/spring.datasource.username")"
+DB_APP_PASSWORD="$(ssm_get "$LOAD_TEST_PARAMETER_PREFIX/spring.datasource.password")"
+
+if [ -z "$DB_APP_USER" ] || [ -z "$DB_APP_PASSWORD" ]; then
+  echo "Load-test datasource username/password parameters are required." >&2
+  exit 1
+fi
+
+mkdir -p "$MYSQL_DATA_DIR" "$RESTORE_ROOT" /etc/mysql/conf.d /opt/solid-connection
+chown -R 999:999 "$MYSQL_DATA_DIR"
+chmod 750 "$MYSQL_DATA_DIR"
+
+cat > /etc/mysql/conf.d/tuning.cnf <<'CNFEOF'
+${mysql_config_content}
+CNFEOF
+chmod 644 /etc/mysql/conf.d/tuning.cnf
+
+docker image inspect mysql:8.4.8 >/dev/null 2>&1 || {
+  echo "Required Docker image is not preloaded in the AMI: mysql:8.4.8" >&2
+  exit 1
+}
+docker rm -f mysql-server 2>/dev/null || true
+docker run -d \
+  --name mysql-server \
+  --restart always \
+  -p "$DB_PORT":3306 \
+  -v "$MYSQL_DATA_DIR:/var/lib/mysql" \
+  -v /etc/mysql/conf.d:/etc/mysql/conf.d \
+  -e MYSQL_ROOT_PASSWORD="$DB_APP_PASSWORD" \
+  mysql:8.4.8
+
+MYSQL_READY=false
+for _ in $(seq 1 90); do
+  if docker exec mysql-server mysql -uroot -p"$DB_APP_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
+    MYSQL_READY=true
+    break
+  fi
+  sleep 2
+done
+
+if [ "$MYSQL_READY" != "true" ]; then
+  echo "MySQL container did not become ready within 180 seconds." >&2
+  docker logs --tail 100 mysql-server >&2 || true
+  exit 1
+fi
+
+sql_escape() {
+  python3 -c "import sys; print(sys.argv[1].replace('\\\\', '\\\\\\\\').replace(\"'\", \"\\\\'\"))" "$1"
+}
+
+DB_APP_USER_SQL="$(sql_escape "$DB_APP_USER")"
+DB_APP_PASSWORD_SQL="$(sql_escape "$DB_APP_PASSWORD")"
+
+docker exec -i mysql-server mysql -uroot -p"$DB_APP_PASSWORD" <<SQLEOF
+CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+CREATE USER IF NOT EXISTS '$DB_APP_USER_SQL'@'%' IDENTIFIED BY '$DB_APP_PASSWORD_SQL';
+ALTER USER '$DB_APP_USER_SQL'@'%' IDENTIFIED BY '$DB_APP_PASSWORD_SQL';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_APP_USER_SQL'@'%';
+FLUSH PRIVILEGES;
+SQLEOF
+
+if [ ! -f "$READY_FILE" ]; then
+  latest_manifest_key="$(aws s3api list-objects-v2 \
+    --bucket "$MYSQL_BACKUP_BUCKET" \
+    --prefix dump/ \
+    --region "$AWS_REGION" \
+    --query 'Contents[?ends_with(Key, `manifest.json`)].[LastModified,Key]' \
+    --output text \
+    | sort -k1,1 \
+    | tail -n 1 \
+    | awk '{print $2}')"
+
+  if [ -z "$latest_manifest_key" ] || [ "$latest_manifest_key" = "None" ]; then
+    echo "No MySQL dump manifest was found in s3://$MYSQL_BACKUP_BUCKET/dump/." >&2
+    exit 1
+  fi
+
+  restore_dir="$(mktemp -d "$RESTORE_ROOT/restore.XXXXXX")"
+  manifest_file="$restore_dir/manifest.json"
+  aws s3 cp "s3://$MYSQL_BACKUP_BUCKET/$latest_manifest_key" "$manifest_file" \
+    --region "$AWS_REGION" \
+    --only-show-errors \
+    --no-progress
+
+  mapfile -t manifest_values < <(python3 - "$manifest_file" "$DB_NAME" <<'PY'
+import json
+import re
+import sys
+
+manifest_path = sys.argv[1]
+expected_database = sys.argv[2]
+
+try:
+    with open(manifest_path, encoding="utf-8") as manifest_file:
+        manifest = json.load(manifest_file)
+except (OSError, json.JSONDecodeError) as exc:
+    print(f"Failed to read MySQL dump manifest: {exc}", file=sys.stderr)
+    sys.exit(1)
+
+checks = [
+    (manifest.get("schemaVersion") == 1, "schemaVersion must be 1"),
+    (manifest.get("type") == "mysql-full-dump", "type must be mysql-full-dump"),
+    (manifest.get("database") == expected_database, f"database must be {expected_database}"),
+]
+
+dump_file = manifest.get("dumpFile")
+if not isinstance(dump_file, str) or "/" in dump_file or dump_file in {"", ".", ".."}:
+    checks.append((False, "dumpFile must be a file name"))
+
+sha256 = manifest.get("sha256")
+if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
+    checks.append((False, "sha256 must be a 64-character hex string"))
+
+errors = [message for valid, message in checks if not valid]
+if errors:
+    print("Invalid MySQL dump manifest: " + "; ".join(errors), file=sys.stderr)
+    sys.exit(1)
+
+print(dump_file)
+print(sha256.lower())
+PY
+  )
+  dump_file="$${manifest_values[0]}"
+  dump_sha256="$${manifest_values[1]}"
+  dump_prefix="$${latest_manifest_key%/manifest.json}"
+  dump_path="$restore_dir/$dump_file"
+
+  aws s3 cp "s3://$MYSQL_BACKUP_BUCKET/$dump_prefix/$dump_file" "$dump_path" \
+    --region "$AWS_REGION" \
+    --only-show-errors \
+    --no-progress
+
+  actual_sha256="$(sha256sum "$dump_path" | awk '{print $1}')"
+  if [ "$actual_sha256" != "$dump_sha256" ]; then
+    echo "Dump checksum mismatch: expected=$dump_sha256 actual=$actual_sha256" >&2
+    exit 1
+  fi
+
+  docker exec -i mysql-server mysql -uroot -p"$DB_APP_PASSWORD" <<SQLEOF
+DROP DATABASE IF EXISTS \`$DB_NAME\`;
+CREATE DATABASE \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+SQLEOF
+
+  gzip -dc "$dump_path" | docker exec -i mysql-server mysql -uroot -p"$DB_APP_PASSWORD" "$DB_NAME"
+  rm -rf "$restore_dir"
+fi
+
+docker exec -i mysql-server mysql -uroot -p"$DB_APP_PASSWORD" <<SQLEOF
+CREATE USER IF NOT EXISTS '$DB_APP_USER_SQL'@'%' IDENTIFIED BY '$DB_APP_PASSWORD_SQL';
+ALTER USER '$DB_APP_USER_SQL'@'%' IDENTIFIED BY '$DB_APP_PASSWORD_SQL';
+GRANT ALL PRIVILEGES ON \`$DB_NAME\`.* TO '$DB_APP_USER_SQL'@'%';
+FLUSH PRIVILEGES;
+SQLEOF
+
+printf 'ready_at=%s\nsource=s3://%s/%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MYSQL_BACKUP_BUCKET" "$${latest_manifest_key:-already-restored}" > "$READY_FILE"

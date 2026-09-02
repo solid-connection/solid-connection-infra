@@ -5,6 +5,8 @@
 *.tfvars
 .terraform.lock.hcl
 modules/shared_resources/dist/*.zip
+config/load-test/k6/bruno-all-apis.js
+__pycache__/
 
 # --- Secrets (보안상 절대 커밋 금지) ---
 *.pem

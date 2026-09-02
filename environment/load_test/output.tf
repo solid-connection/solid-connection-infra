@@ -1,16 +1,26 @@
-output "load_test_rds_endpoint" {
-  description = "Load test RDS endpoint"
-  value       = aws_db_instance.load_test.address
+output "load_test_db_endpoint" {
+  description = "Load-test MySQL EC2 private endpoint"
+  value       = aws_instance.load_test_db.private_ip
 }
 
-output "load_test_rds_port" {
-  description = "Load test RDS port"
-  value       = aws_db_instance.load_test.port
+output "load_test_db_port" {
+  description = "Load-test MySQL EC2 port"
+  value       = var.load_test_db_port
 }
 
-output "load_test_rds_identifier" {
-  description = "Load test RDS identifier"
-  value       = aws_db_instance.load_test.identifier
+output "load_test_db_instance_id" {
+  description = "Load-test MySQL EC2 instance ID"
+  value       = aws_instance.load_test_db.id
+}
+
+output "load_test_db_private_ip" {
+  description = "Load-test MySQL EC2 private IP"
+  value       = aws_instance.load_test_db.private_ip
+}
+
+output "load_test_db_data_volume_id" {
+  description = "Load-test MySQL EC2 data EBS volume ID"
+  value       = aws_ebs_volume.load_test_db_data.id
 }
 
 output "load_test_db_name" {
@@ -18,18 +28,18 @@ output "load_test_db_name" {
   value       = var.db_name
 }
 
-output "prod_rds_endpoint" {
-  description = "Prod RDS endpoint used as dump source"
-  value       = data.aws_db_instance.prod.address
+output "prod_db_instance_id" {
+  description = "Prod MySQL EC2 instance ID used as the default AMI source"
+  value       = data.aws_instance.prod_db.id
 }
 
-output "prod_rds_port" {
-  description = "Prod RDS port"
-  value       = data.aws_db_instance.prod.port
+output "prod_db_private_ip" {
+  description = "Prod MySQL EC2 private IP"
+  value       = data.aws_instance.prod_db.private_ip
 }
 
 output "prod_api_instance_id" {
-  description = "Prod API EC2 instance ID whose security group can access load-test RDS"
+  description = "Prod API EC2 instance ID whose security group can access load-test MySQL EC2"
   value       = data.aws_instance.prod_api.id
 }
 

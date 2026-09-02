@@ -22,15 +22,39 @@ data "aws_instance" "stage_api" {
   }
 }
 
+data "aws_instance" "prod_db" {
+  filter {
+    name   = "tag:Name"
+    values = [var.prod_db_instance_name]
+  }
+
+  filter {
+    name   = "instance-state-name"
+    values = ["running"]
+  }
+}
+
 data "aws_subnet" "stage_api" {
   id = data.aws_instance.stage_api.subnet_id
 }
 
-data "aws_subnets" "target" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_subnet.stage_api.vpc_id]
-  }
+locals {
+  load_test_db_subnet_id = var.load_test_db_subnet_id != null ? var.load_test_db_subnet_id : data.aws_instance.prod_db.subnet_id
+  load_test_db_ami_id    = var.load_test_db_ami_id != null ? var.load_test_db_ami_id : data.aws_instance.prod_db.ami
+  load_test_db_ssm_endpoint_services = toset([
+    "ec2messages",
+    "ssm",
+    "ssmmessages",
+  ])
+
+  source_security_group_ids = setunion(
+    data.aws_instance.prod_api.vpc_security_group_ids,
+    data.aws_instance.stage_api.vpc_security_group_ids
+  )
+}
+
+data "aws_subnet" "load_test_db" {
+  id = local.load_test_db_subnet_id
 }
 
 data "aws_ami" "ubuntu" {
@@ -48,27 +72,10 @@ data "aws_ami" "ubuntu" {
   }
 }
 
-data "aws_db_instance" "prod" {
-  db_instance_identifier = var.prod_rds_identifier
-}
-
-data "aws_db_snapshot" "latest_prod" {
-  db_instance_identifier = var.prod_rds_identifier
-  most_recent            = true
-  snapshot_type          = "automated"
-}
-
-locals {
-  source_security_group_ids = setunion(
-    data.aws_instance.prod_api.vpc_security_group_ids,
-    data.aws_instance.stage_api.vpc_security_group_ids
-  )
-}
-
 resource "aws_security_group" "load_test_db" {
   name        = "sc-load-test-db-sg"
-  description = "Security group for load test RDS"
-  vpc_id      = data.aws_subnet.stage_api.vpc_id
+  description = "Security group for load test MySQL EC2"
+  vpc_id      = data.aws_subnet.load_test_db.vpc_id
 
   egress {
     from_port   = 0
@@ -87,11 +94,109 @@ resource "aws_security_group_rule" "load_test_db_mysql" {
 
   type                     = "ingress"
   description              = "MySQL from prod/stage API server"
-  from_port                = 3306
-  to_port                  = 3306
+  from_port                = var.load_test_db_port
+  to_port                  = var.load_test_db_port
   protocol                 = "tcp"
   security_group_id        = aws_security_group.load_test_db.id
   source_security_group_id = each.value
+}
+
+resource "aws_security_group" "load_test_db_ssm_endpoint" {
+  name        = "sc-load-test-db-ssm-endpoint-sg"
+  description = "Security group for load test DB SSM interface endpoints"
+  vpc_id      = data.aws_subnet.load_test_db.vpc_id
+
+  ingress {
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    security_groups = [aws_security_group.load_test_db.id]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "solid-connection-load-test-db-ssm-endpoint-sg"
+  }
+}
+
+resource "aws_vpc_endpoint" "load_test_db_ssm" {
+  for_each = local.load_test_db_ssm_endpoint_services
+
+  vpc_id              = data.aws_subnet.load_test_db.vpc_id
+  service_name        = "com.amazonaws.ap-northeast-2.${each.key}"
+  vpc_endpoint_type   = "Interface"
+  subnet_ids          = [local.load_test_db_subnet_id]
+  security_group_ids  = [aws_security_group.load_test_db_ssm_endpoint.id]
+  private_dns_enabled = false
+
+  tags = {
+    Name = "solid-connection-load-test-db-${each.key}-endpoint"
+  }
+}
+
+resource "aws_ebs_volume" "load_test_db_data" {
+  availability_zone = data.aws_subnet.load_test_db.availability_zone
+  size              = var.allocated_storage
+  type              = "gp3"
+  encrypted         = true
+
+  tags = {
+    Name = "${var.load_test_db_instance_name}-data"
+  }
+}
+
+resource "aws_instance" "load_test_db" {
+  ami                         = local.load_test_db_ami_id
+  instance_type               = var.load_test_db_instance_type
+  subnet_id                   = local.load_test_db_subnet_id
+  vpc_security_group_ids      = [aws_security_group.load_test_db.id]
+  associate_public_ip_address = var.load_test_db_associate_public_ip
+  iam_instance_profile        = var.load_test_db_instance_profile_name
+
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 1
+  }
+
+  root_block_device {
+    volume_size           = 8
+    volume_type           = "gp3"
+    encrypted             = true
+    delete_on_termination = true
+  }
+
+  user_data = templatefile("${path.module}/templates/load_test_mysql_setup.sh.tftpl", {
+    aws_region                 = "ap-northeast-2"
+    data_volume_id             = aws_ebs_volume.load_test_db_data.id
+    db_name                    = var.db_name
+    db_port                    = var.load_test_db_port
+    ec2messages_endpoint_host  = aws_vpc_endpoint.load_test_db_ssm["ec2messages"].dns_entry[0].dns_name
+    load_test_parameter_prefix = var.load_test_parameter_prefix
+    mysql_backup_bucket_name   = var.mysql_backup_bucket_name
+    mysql_config_content       = file("${path.module}/../../modules/app_stack/templates/mysql_tuning.cnf")
+    ssm_endpoint_host          = aws_vpc_endpoint.load_test_db_ssm["ssm"].dns_entry[0].dns_name
+    ssmmessages_endpoint_host  = aws_vpc_endpoint.load_test_db_ssm["ssmmessages"].dns_entry[0].dns_name
+  })
+
+  user_data_replace_on_change = true
+
+  tags = {
+    Name = var.load_test_db_instance_name
+  }
+}
+
+resource "aws_volume_attachment" "load_test_db_data" {
+  device_name                    = "/dev/sdf"
+  volume_id                      = aws_ebs_volume.load_test_db_data.id
+  instance_id                    = aws_instance.load_test_db.id
+  stop_instance_before_detaching = true
 }
 
 resource "aws_security_group" "load_generator" {
@@ -152,39 +257,9 @@ resource "aws_instance" "load_generator" {
   }
 }
 
-resource "aws_db_subnet_group" "load_test" {
-  name       = "sc-load-test-db-subnet-group"
-  subnet_ids = data.aws_subnets.target.ids
-
-  tags = {
-    Name = "solid-connection-load-test-db-subnet-group"
-  }
-}
-
-resource "aws_db_instance" "load_test" {
-  identifier              = var.rds_identifier
-  instance_class          = var.db_instance_class
-  parameter_group_name    = var.db_parameter_group_name
-  snapshot_identifier     = data.aws_db_snapshot.latest_prod.id
-  db_subnet_group_name    = aws_db_subnet_group.load_test.name
-  vpc_security_group_ids  = [aws_security_group.load_test_db.id]
-  publicly_accessible     = false
-  skip_final_snapshot     = true
-  copy_tags_to_snapshot   = true
-  deletion_protection     = false
-  backup_retention_period = 0
-  apply_immediately       = true
-  storage_encrypted       = true
-  kms_key_id              = var.kms_key_arn
-
-  tags = {
-    Name = var.rds_identifier
-  }
-}
-
 resource "aws_ssm_parameter" "load_test_datasource_url" {
   name      = "${var.load_test_parameter_prefix}/spring.datasource.url"
   type      = "String"
-  value     = "jdbc:mysql://${aws_db_instance.load_test.address}:${aws_db_instance.load_test.port}/${var.db_name}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
+  value     = "jdbc:mysql://${aws_instance.load_test_db.private_ip}:${var.load_test_db_port}/${var.db_name}?serverTimezone=Asia/Seoul&characterEncoding=UTF-8"
   overwrite = true
 }
