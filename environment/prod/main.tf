@@ -28,6 +28,7 @@ module "prod_stack" {
   db_instance_type                    = var.db_ec2_instance_type
   db_ami_id                           = var.db_ec2_ami_id
   db_subnet_id                        = var.db_ec2_subnet_id
+  db_private_ip                       = var.db_ec2_private_ip
   db_data_volume_size                 = var.db_data_volume_size
 
   # 보안 그룹 규칙

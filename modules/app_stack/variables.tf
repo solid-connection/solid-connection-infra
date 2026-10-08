@@ -36,6 +36,12 @@ variable "db_subnet_id" {
   default     = null
 }
 
+variable "db_private_ip" {
+  description = "DB EC2에 고정할 Private IP. 인스턴스를 교체해도 같은 주소를 유지해 datasource 설정을 바꾸지 않기 위해 사용합니다"
+  type        = string
+  default     = null
+}
+
 variable "db_data_volume_size" {
   description = "DB EC2 MySQL data volume 크기 (GiB)"
   type        = number

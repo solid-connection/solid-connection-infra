@@ -44,6 +44,8 @@ resource "aws_instance" "db_server" {
   ami           = var.db_ami_id
   instance_type = var.db_instance_type
   subnet_id     = var.db_subnet_id
+  # 인스턴스를 교체해도 Parameter Store 의 datasource 주소와 API 서버 설정을 그대로 쓰도록 주소를 고정합니다.
+  private_ip = var.db_private_ip
 
   vpc_security_group_ids = [
     aws_security_group.db_ec2_sg[count.index].id,

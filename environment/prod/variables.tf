@@ -33,6 +33,11 @@ variable "db_ec2_subnet_id" {
   type        = string
 }
 
+variable "db_ec2_private_ip" {
+  description = "DB EC2에 고정할 Private IP (db_ec2_subnet_id 의 CIDR 안에 있어야 합니다)"
+  type        = string
+}
+
 variable "db_data_volume_size" {
   description = "DB EC2 MySQL data volume 크기 (GiB)"
   type        = number
