@@ -146,6 +146,18 @@ class PlanCheckTest(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertFalse(out.exists())
 
+    def test_policy_reports_rule_error_on_stdout_as_failure(self):
+        policy_dir = Path(__file__).resolve().parents[1] / "policies"
+        rule = policy_dir / "zz_test_broken_rule.py"
+        rule.write_text('RULE_ID = "TEST-BROKEN"\ndef check(action, change):\n    raise KeyError("x")\n', encoding="utf-8")
+        self.addCleanup(rule.unlink)
+
+        result = self.run_check("policy", str(self.plan))
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("TEST-BROKEN", result.stdout)
+        self.assertIn("규칙 실행 오류", result.stdout)
+
     def test_expect_rejects_malformed_line(self):
         expect = self.write_expect("prod modify aws_ebs_volume.db_data\n")
 

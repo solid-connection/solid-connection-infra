@@ -101,12 +101,16 @@ ensure_image() {
 }
 
 # origin/main 대비 변경 파일로 L2 대상 환경을 고른다. (CI terraform-plan.yml 의 paths-filter 와 같은 기준)
+# 기준 ref 와 비교할 수 없으면(미fetch, merge base 없음 등) 1 을 반환한다. 커밋된 변경이 감지에서 빠진 채
+# "대상 없음"으로 통과하지 않도록, 호출부가 이를 L2 SKIPPED 로 기록한다.
 detect_changed_envs() {
-  local base="$1" files
-  if ! files="$( { git -C "$REPO_ROOT" diff --name-only "$base"...HEAD; git -C "$REPO_ROOT" diff --name-only HEAD; git -C "$REPO_ROOT" ls-files --others --exclude-standard; } 2>/dev/null)"; then
-    echo "WARN: '$base' 와 비교할 수 없어 변경 환경을 감지하지 못했습니다. --env 로 지정하세요." >&2
-    return
+  local base="$1" committed files
+  if ! committed="$(git -C "$REPO_ROOT" diff --name-only "$base"...HEAD 2>/dev/null)"; then
+    return 1
   fi
+  files="$committed
+$(git -C "$REPO_ROOT" diff --name-only HEAD 2>/dev/null)
+$(git -C "$REPO_ROOT" ls-files --others --exclude-standard 2>/dev/null)"
 
   matches() { grep -qE "$1" <<<"$files"; }
   matches '^bootstrap/' && echo bootstrap
@@ -162,12 +166,17 @@ run_on_host() {
 
   if [[ " ${LAYERS[*]} " == *" l2 "* ]]; then
     # macOS 기본 bash(3.2)는 set -u 에서 빈 배열 전개를 에러로 처리하므로 문자열로 다룬다.
-    local env_list="$ENVS"
+    local env_list="$ENVS" detected detect_error=""
     if [[ -z "$env_list" ]]; then
-      env_list="$(detect_changed_envs "$BASE_REF" | tr '\n' ' ')"
-      echo "==> L2 대상 환경 (자동 감지, 기준 $BASE_REF): ${env_list:-(없음)}" >&2
+      if detected="$(detect_changed_envs "$BASE_REF")"; then
+        env_list="$(tr '\n' ' ' <<<"$detected")"
+        echo "==> L2 대상 환경 (자동 감지, 기준 $BASE_REF): ${env_list:-(없음)}" >&2
+      else
+        detect_error="기준 ref '$BASE_REF' 와 비교할 수 없어 변경 환경을 감지하지 못함 (git fetch origin 후 재실행하거나 --base / --env 지정)"
+        echo "WARN: $detect_error" >&2
+      fi
     fi
-    docker_args+=(-e "VERIFY_L2_ENVS=$env_list")
+    docker_args+=(-e "VERIFY_L2_ENVS=$env_list" -e "VERIFY_L2_DETECT_ERROR=$detect_error")
 
     # plan 전문은 .verify/l2/ 에 남긴다. (gitignore 대상, 레포 마운트는 읽기 전용)
     mkdir -p "$REPO_ROOT/.verify"

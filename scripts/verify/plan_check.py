@@ -100,7 +100,11 @@ def load_policies():
 
 def cmd_policy(args):
     changes = load_changes(args.plan)
-    policies = load_policies()
+    try:
+        policies = load_policies()
+    except Exception as e:  # noqa: BLE001 - 규칙 파일 오류도 CI 댓글에 실패로 보여야 한다
+        print(f"    정책 규칙 로드 실패: {type(e).__name__}: {e}")
+        return 1
     if not policies:
         # stdout 은 CI 댓글에 실리므로 안내 문구는 stderr 로 보낸다.
         print("    등록된 정책 규칙 없음 (scripts/verify/policies/README.md 참고)", file=sys.stderr)
@@ -109,7 +113,12 @@ def cmd_policy(args):
     blocked = False
     for policy in policies:
         for action, address, rc in changes:
-            message = policy.check(action, rc)
+            try:
+                message = policy.check(action, rc)
+            except Exception as e:  # noqa: BLE001 - 규칙 오류를 통과로 오인하지 않도록 실패로 기록한다
+                print(f"    [error] {getattr(policy, 'RULE_ID', policy.__name__)} {redact_keys(address)}: 규칙 실행 오류 {type(e).__name__}")
+                blocked = True
+                continue
             if not message:
                 continue
             severity = getattr(policy, "SEVERITY", "block")

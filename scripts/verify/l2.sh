@@ -96,6 +96,11 @@ plan_env() {
   terraform -chdir="$dir" show -json "$plan_file" >"$PLAN_DIR/$env.json"
 }
 
+if [[ -n "${VERIFY_L2_DETECT_ERROR:-}" ]]; then
+  record SKIPPED "$LAYER" "L2 대상 감지" "$VERIFY_L2_DETECT_ERROR"
+  exit 0
+fi
+
 read -r -a envs <<<"${VERIFY_L2_ENVS:-}"
 if [[ ${#envs[@]} -eq 0 ]]; then
   echo "  변경된 Terraform 환경이 없어 L2 대상이 없습니다. (--env 로 직접 지정 가능)"
