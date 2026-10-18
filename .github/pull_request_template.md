@@ -10,10 +10,13 @@
 
 ## 의도 (L2)
 
-<!-- 이 PR 로 plan 에 나와야 하는 리소스 변경을 적어 주세요. CI 가 실제 plan 과 대조하며, 블록이 없으면 plan job 이 실패합니다. -->
-<!-- 형식: <env> <create|update|delete|replace> <address, * ? 와일드카드>. 적지 않은 환경은 "변경 없음"으로 대조합니다. -->
+이 PR 로 plan 에 나와야 하는 리소스 변경입니다. CI 가 아래 블록과 실제 plan 을 대조합니다. (블록이 없으면 plan job 실패)
+적지 않은 환경은 "변경 없음"으로 대조하며, `#` 이후는 주석입니다.
 
 ```verify-expect
+# <env> <create|update|delete|replace> <address, * ? 와일드카드>
+# 예) prod update module.prod_stack.aws_instance.api_server
+# 리소스 변경이 없는 PR 이면 이 주석만 남겨 둡니다.
 ```
 
 ## 검증 결과 (L1 ~ L3)
