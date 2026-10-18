@@ -12,7 +12,8 @@ reviews:
     - path: "**/*.tf"
       instructions: |
         이 PR의 Terraform 코드 변경을 리뷰합니다.
-        PR 댓글에 올라온 각 환경의 "Terraform Plan" 결과를 반드시 확인하고, 코드 변경과 plan 결과가 일치하는지 검토하세요.
+        PR 댓글에 올라온 각 환경의 "Terraform Plan" 결과(리소스 단위 변경 목록과 정책 검사 결과)를 반드시 확인하고,
+        코드 변경과 plan 결과가 일치하는지 검토하세요. PR 본문의 "검증 결과"에 SKIPPED 항목이 있다면 검증되지 않은 범위로 취급하세요.
 
         다음 항목을 중점적으로 검토하세요:
         - plan에 예상치 못한 resource destroy 또는 replace가 포함된 경우

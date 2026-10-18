@@ -1,0 +1,62 @@
+# trivy config (L1 IaC 보안 스캔) 예외 목록
+#
+# 예외는 반드시 ID + 경로(paths)로 범위를 좁히고 statement 에 사유를 남긴다.
+# 이 파일은 검증 정책이므로 인프라 변경 PR 에서 함께 수정하지 않는다. (별도 PR 로 리뷰)
+
+misconfigurations:
+  # --- 정책상 허용 ---------------------------------------------------------
+  - id: AWS-0104
+    paths:
+      - "modules/app_stack/security_groups.tf"
+      - "modules/monitoring_stack/security_groups.tf"
+      - "environment/load_test/main.tf"
+    statement: >-
+      아웃바운드 전체 허용(0.0.0.0/0 egress)은 패키지 설치, ECR/SSM/S3 접근 등에 필요해 정책상 허용한다.
+      인바운드 규칙은 예외 대상이 아니다.
+
+  - id: AWS-0132
+    paths:
+      - "bootstrap/s3.tf"
+      - "environment/prod/mysql_backup.tf"
+      - "modules/shared_resources/s3.tf"
+    statement: >-
+      S3 암호화는 SSE-S3(AES256)를 사용한다. CMK(KMS) 는 비용 대비 요구사항이 없어 사용하지 않는다.
+
+  - id: DS-0002
+    paths:
+      - "scripts/verify/docker/Dockerfile"
+    statement: >-
+      검증 전용 일회성 컨테이너다. 레포는 읽기 전용으로 마운트하고 root 캐시 볼륨에 쓰기 위해 root 로 실행한다.
+
+  # --- 기존 부채 (#89 도입 시점, 후속 조치 필요) --------------------------
+  # 아래 항목은 수정 시 인스턴스 교체 등 운영 영향이 있어 검증 파이프라인 도입과 분리한다.
+  - id: AWS-0028
+    paths:
+      - "modules/app_stack/ec2.tf"
+      - "modules/monitoring_stack/ec2.tf"
+    statement: >-
+      기존 부채: IMDSv2(http_tokens = required) 미강제. 적용 시 인스턴스 메타데이터 옵션 변경이 필요해 별도 이슈로 진행한다.
+
+  - id: AWS-0131
+    paths:
+      - "modules/app_stack/ec2.tf"
+      - "modules/monitoring_stack/ec2.tf"
+    statement: >-
+      기존 부채: root 볼륨 미암호화. 적용 시 인스턴스 교체가 발생해 별도 이슈로 진행한다.
+
+  - id: AWS-0086
+    paths:
+      - "modules/shared_resources/s3.tf"
+    statement: 기존 부채, upload 버킷 public access block 미설정. 공개 범위 확인 후 별도 이슈로 진행한다.
+  - id: AWS-0087
+    paths:
+      - "modules/shared_resources/s3.tf"
+    statement: 기존 부채, upload 버킷 public access block 미설정. 공개 범위 확인 후 별도 이슈로 진행한다.
+  - id: AWS-0091
+    paths:
+      - "modules/shared_resources/s3.tf"
+    statement: 기존 부채, upload 버킷 public access block 미설정. 공개 범위 확인 후 별도 이슈로 진행한다.
+  - id: AWS-0093
+    paths:
+      - "modules/shared_resources/s3.tf"
+    statement: 기존 부채, upload 버킷 public access block 미설정. 공개 범위 확인 후 별도 이슈로 진행한다.

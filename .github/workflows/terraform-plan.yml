@@ -3,6 +3,13 @@ name: Terraform Plan
 on:
   pull_request:
     branches: [main]
+    # edited: PR 본문의 verify-expect(의도) 블록을 고치면 의도 대조를 다시 실행한다.
+    types: [opened, synchronize, reopened, edited]
+
+# PR 본문 수정(edited)이 연달아 일어나도 같은 PR 의 plan 이 겹쳐 state lock 이 충돌하지 않게 한다.
+concurrency:
+  group: terraform-plan-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 permissions:
   id-token: write
@@ -22,6 +29,7 @@ jobs:
       prod: ${{ steps.filter.outputs.prod }}
       stage: ${{ steps.filter.outputs.stage }}
       monitoring: ${{ steps.filter.outputs.monitoring }}
+      load_test: ${{ steps.filter.outputs.load_test }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,16 +49,22 @@ jobs:
               - 'environment/prod/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
+              - 'config/side-infra/**'
               - 'config/secrets'
             stage:
               - 'environment/stage/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
+              - 'config/side-infra/**'
               - 'config/secrets'
             monitoring:
               - 'environment/monitoring/**'
               - 'modules/monitoring_stack/**'
               - 'modules/common/**'
+              - 'config/secrets'
+            load_test:
+              - 'environment/load_test/**'
+              - 'modules/app_stack/templates/**'
               - 'config/secrets'
 
   plan-bootstrap:
@@ -77,8 +91,27 @@ jobs:
         id: plan
         working-directory: bootstrap
         run: |
-          terraform plan -no-color 2>&1 | tee plan_output.txt
+          terraform plan -no-color -out=tfplan 2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Check Plan (L2)
+        if: steps.plan.outputs.exitcode == '0'
+        working-directory: bootstrap
+        env:
+          # PR 본문은 신뢰할 수 없는 입력이므로 스크립트에 직접 넣지 않고 환경 변수로만 전달한다.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          check="$GITHUB_WORKSPACE/scripts/verify/plan_check.py"
+          rc=0
+          terraform show -json tfplan > plan.json
+          python3 "$check" summary plan.json --markdown > plan_changes.md
+          python3 "$check" policy plan.json > plan_policy.txt || rc=1
+          if python3 "$check" extract-expect --out expect.txt > plan_intent.txt; then
+            python3 "$check" expect plan.json --env bootstrap --expect expect.txt --redact > plan_intent.txt || rc=1
+          else
+            rc=1
+          fi
+          cat plan_policy.txt plan_intent.txt
+          exit "$rc"
       - name: Upload Plan Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -93,10 +126,18 @@ jobs:
             const fs = require('fs');
             const marker = '<!-- terraform-plan:bootstrap -->';
             const planFile = 'bootstrap/plan_output.txt';
+            const readIfExists = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : '';
+            const changes = readIfExists('bootstrap/plan_changes.md');
+            const policy = readIfExists('bootstrap/plan_policy.txt');
+            const intent = readIfExists('bootstrap/plan_intent.txt');
+            const intentResult = fs.existsSync('bootstrap/plan_intent.txt') ? (intent ? `❌ 실패\n\n\`\`\`\n${intent}\n\`\`\`` : '✅ 일치') : '';
+            const intentSection = intentResult ? `**의도 대조** (PR 본문 \`verify-expect\`): ${intentResult}\n\n` : '';
+            const changesSection = changes ? `${changes}\n\n` : '';
+            const policySection = policy ? `**정책 검사**\n\n\`\`\`\n${policy}\n\`\`\`\n\n` : '';
             const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
             const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `${marker}\n## Terraform Plan: \`bootstrap\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+            const body = `${marker}\n## Terraform Plan: \`bootstrap\`\n\n${summary}\n\n${changesSection}${policySection}${intentSection}> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
@@ -138,10 +179,29 @@ jobs:
         id: plan
         working-directory: environment/global
         run: |
-          terraform plan -no-color \
+          terraform plan -no-color -out=tfplan \
             -var-file="../../config/secrets/shared_resources.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Check Plan (L2)
+        if: steps.plan.outputs.exitcode == '0'
+        working-directory: environment/global
+        env:
+          # PR 본문은 신뢰할 수 없는 입력이므로 스크립트에 직접 넣지 않고 환경 변수로만 전달한다.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          check="$GITHUB_WORKSPACE/scripts/verify/plan_check.py"
+          rc=0
+          terraform show -json tfplan > plan.json
+          python3 "$check" summary plan.json --markdown > plan_changes.md
+          python3 "$check" policy plan.json > plan_policy.txt || rc=1
+          if python3 "$check" extract-expect --out expect.txt > plan_intent.txt; then
+            python3 "$check" expect plan.json --env global --expect expect.txt --redact > plan_intent.txt || rc=1
+          else
+            rc=1
+          fi
+          cat plan_policy.txt plan_intent.txt
+          exit "$rc"
       - name: Upload Plan Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -156,10 +216,18 @@ jobs:
             const fs = require('fs');
             const marker = '<!-- terraform-plan:global -->';
             const planFile = 'environment/global/plan_output.txt';
+            const readIfExists = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : '';
+            const changes = readIfExists('environment/global/plan_changes.md');
+            const policy = readIfExists('environment/global/plan_policy.txt');
+            const intent = readIfExists('environment/global/plan_intent.txt');
+            const intentResult = fs.existsSync('environment/global/plan_intent.txt') ? (intent ? `❌ 실패\n\n\`\`\`\n${intent}\n\`\`\`` : '✅ 일치') : '';
+            const intentSection = intentResult ? `**의도 대조** (PR 본문 \`verify-expect\`): ${intentResult}\n\n` : '';
+            const changesSection = changes ? `${changes}\n\n` : '';
+            const policySection = policy ? `**정책 검사**\n\n\`\`\`\n${policy}\n\`\`\`\n\n` : '';
             const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
             const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `${marker}\n## Terraform Plan: \`global\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+            const body = `${marker}\n## Terraform Plan: \`global\`\n\n${summary}\n\n${changesSection}${policySection}${intentSection}> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
@@ -265,7 +333,7 @@ jobs:
         id: plan
         working-directory: environment/prod
         run: |
-          terraform plan -no-color \
+          terraform plan -no-color -out=tfplan \
             -var-file="../../config/secrets/prod.tfvars" \
             -var-file="../../config/secrets/prod_db.tfvars" \
             -var-file="../../config/secrets/app_stack.tfvars" \
@@ -274,6 +342,25 @@ jobs:
       - name: Stop SSM Tunnel
         if: always()
         run: kill $SSM_PID 2>/dev/null || true
+      - name: Check Plan (L2)
+        if: steps.plan.outputs.exitcode == '0'
+        working-directory: environment/prod
+        env:
+          # PR 본문은 신뢰할 수 없는 입력이므로 스크립트에 직접 넣지 않고 환경 변수로만 전달한다.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          check="$GITHUB_WORKSPACE/scripts/verify/plan_check.py"
+          rc=0
+          terraform show -json tfplan > plan.json
+          python3 "$check" summary plan.json --markdown > plan_changes.md
+          python3 "$check" policy plan.json > plan_policy.txt || rc=1
+          if python3 "$check" extract-expect --out expect.txt > plan_intent.txt; then
+            python3 "$check" expect plan.json --env prod --expect expect.txt --redact > plan_intent.txt || rc=1
+          else
+            rc=1
+          fi
+          cat plan_policy.txt plan_intent.txt
+          exit "$rc"
       - name: Upload Plan Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -288,10 +375,18 @@ jobs:
             const fs = require('fs');
             const marker = '<!-- terraform-plan:prod -->';
             const planFile = 'environment/prod/plan_output.txt';
+            const readIfExists = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : '';
+            const changes = readIfExists('environment/prod/plan_changes.md');
+            const policy = readIfExists('environment/prod/plan_policy.txt');
+            const intent = readIfExists('environment/prod/plan_intent.txt');
+            const intentResult = fs.existsSync('environment/prod/plan_intent.txt') ? (intent ? `❌ 실패\n\n\`\`\`\n${intent}\n\`\`\`` : '✅ 일치') : '';
+            const intentSection = intentResult ? `**의도 대조** (PR 본문 \`verify-expect\`): ${intentResult}\n\n` : '';
+            const changesSection = changes ? `${changes}\n\n` : '';
+            const policySection = policy ? `**정책 검사**\n\n\`\`\`\n${policy}\n\`\`\`\n\n` : '';
             const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
             const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `${marker}\n## Terraform Plan: \`prod\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+            const body = `${marker}\n## Terraform Plan: \`prod\`\n\n${summary}\n\n${changesSection}${policySection}${intentSection}> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
@@ -333,11 +428,30 @@ jobs:
         id: plan
         working-directory: environment/stage
         run: |
-          terraform plan -no-color \
+          terraform plan -no-color -out=tfplan \
             -var-file="../../config/secrets/stage.tfvars" \
             -var-file="../../config/secrets/app_stack.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Check Plan (L2)
+        if: steps.plan.outputs.exitcode == '0'
+        working-directory: environment/stage
+        env:
+          # PR 본문은 신뢰할 수 없는 입력이므로 스크립트에 직접 넣지 않고 환경 변수로만 전달한다.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          check="$GITHUB_WORKSPACE/scripts/verify/plan_check.py"
+          rc=0
+          terraform show -json tfplan > plan.json
+          python3 "$check" summary plan.json --markdown > plan_changes.md
+          python3 "$check" policy plan.json > plan_policy.txt || rc=1
+          if python3 "$check" extract-expect --out expect.txt > plan_intent.txt; then
+            python3 "$check" expect plan.json --env stage --expect expect.txt --redact > plan_intent.txt || rc=1
+          else
+            rc=1
+          fi
+          cat plan_policy.txt plan_intent.txt
+          exit "$rc"
       - name: Upload Plan Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -352,10 +466,18 @@ jobs:
             const fs = require('fs');
             const marker = '<!-- terraform-plan:stage -->';
             const planFile = 'environment/stage/plan_output.txt';
+            const readIfExists = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : '';
+            const changes = readIfExists('environment/stage/plan_changes.md');
+            const policy = readIfExists('environment/stage/plan_policy.txt');
+            const intent = readIfExists('environment/stage/plan_intent.txt');
+            const intentResult = fs.existsSync('environment/stage/plan_intent.txt') ? (intent ? `❌ 실패\n\n\`\`\`\n${intent}\n\`\`\`` : '✅ 일치') : '';
+            const intentSection = intentResult ? `**의도 대조** (PR 본문 \`verify-expect\`): ${intentResult}\n\n` : '';
+            const changesSection = changes ? `${changes}\n\n` : '';
+            const policySection = policy ? `**정책 검사**\n\n\`\`\`\n${policy}\n\`\`\`\n\n` : '';
             const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
             const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `${marker}\n## Terraform Plan: \`stage\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+            const body = `${marker}\n## Terraform Plan: \`stage\`\n\n${summary}\n\n${changesSection}${policySection}${intentSection}> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
@@ -397,11 +519,30 @@ jobs:
         id: plan
         working-directory: environment/monitoring
         run: |
-          terraform plan -no-color \
+          terraform plan -no-color -out=tfplan \
             -var-file="../../config/secrets/monitoring.tfvars" \
             -var-file="../../config/secrets/monitoring_stack.tfvars" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Check Plan (L2)
+        if: steps.plan.outputs.exitcode == '0'
+        working-directory: environment/monitoring
+        env:
+          # PR 본문은 신뢰할 수 없는 입력이므로 스크립트에 직접 넣지 않고 환경 변수로만 전달한다.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          check="$GITHUB_WORKSPACE/scripts/verify/plan_check.py"
+          rc=0
+          terraform show -json tfplan > plan.json
+          python3 "$check" summary plan.json --markdown > plan_changes.md
+          python3 "$check" policy plan.json > plan_policy.txt || rc=1
+          if python3 "$check" extract-expect --out expect.txt > plan_intent.txt; then
+            python3 "$check" expect plan.json --env monitoring --expect expect.txt --redact > plan_intent.txt || rc=1
+          else
+            rc=1
+          fi
+          cat plan_policy.txt plan_intent.txt
+          exit "$rc"
       - name: Upload Plan Artifact
         if: always()
         uses: actions/upload-artifact@v4
@@ -416,10 +557,109 @@ jobs:
             const fs = require('fs');
             const marker = '<!-- terraform-plan:monitoring -->';
             const planFile = 'environment/monitoring/plan_output.txt';
+            const readIfExists = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : '';
+            const changes = readIfExists('environment/monitoring/plan_changes.md');
+            const policy = readIfExists('environment/monitoring/plan_policy.txt');
+            const intent = readIfExists('environment/monitoring/plan_intent.txt');
+            const intentResult = fs.existsSync('environment/monitoring/plan_intent.txt') ? (intent ? `❌ 실패\n\n\`\`\`\n${intent}\n\`\`\`` : '✅ 일치') : '';
+            const intentSection = intentResult ? `**의도 대조** (PR 본문 \`verify-expect\`): ${intentResult}\n\n` : '';
+            const changesSection = changes ? `${changes}\n\n` : '';
+            const policySection = policy ? `**정책 검사**\n\n\`\`\`\n${policy}\n\`\`\`\n\n` : '';
             const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
             const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
             const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `${marker}\n## Terraform Plan: \`monitoring\`\n\n${summary}\n\n> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+            const body = `${marker}\n## Terraform Plan: \`monitoring\`\n\n${summary}\n\n${changesSection}${policySection}${intentSection}> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            const existing = comments.find(c => c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ comment_id: existing.id, owner: context.repo.owner, repo: context.repo.repo, body });
+            } else {
+              await github.rest.issues.createComment({ issue_number: context.issue.number, owner: context.repo.owner, repo: context.repo.repo, body });
+            }
+      - name: Plan Status Check
+        if: steps.plan.outputs.exitcode == '1'
+        run: exit 1
+
+  # load_test 는 평소 내려가 있어 plan 이 전체 create 로 나온다. apply 는 load-test-start/stop 워크플로우가 담당한다.
+  plan-load_test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.load_test == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.GH_PAT }}
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_PLAN_ROLE_ARN }}
+          aws-region: ap-northeast-2
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      - name: Terraform Init
+        working-directory: environment/load_test
+        run: terraform init
+      - name: Terraform Plan
+        id: plan
+        working-directory: environment/load_test
+        run: |
+          terraform plan -no-color -out=tfplan \
+            -var-file="../../config/secrets/load_test.tfvars" \
+            2>&1 | tee plan_output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+      - name: Check Plan (L2)
+        if: steps.plan.outputs.exitcode == '0'
+        working-directory: environment/load_test
+        env:
+          # PR 본문은 신뢰할 수 없는 입력이므로 스크립트에 직접 넣지 않고 환경 변수로만 전달한다.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          check="$GITHUB_WORKSPACE/scripts/verify/plan_check.py"
+          rc=0
+          terraform show -json tfplan > plan.json
+          python3 "$check" summary plan.json --markdown > plan_changes.md
+          python3 "$check" policy plan.json > plan_policy.txt || rc=1
+          if python3 "$check" extract-expect --out expect.txt > plan_intent.txt; then
+            python3 "$check" expect plan.json --env load_test --expect expect.txt --redact > plan_intent.txt || rc=1
+          else
+            rc=1
+          fi
+          cat plan_policy.txt plan_intent.txt
+          exit "$rc"
+      - name: Upload Plan Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-plan-load_test
+          path: environment/load_test/plan_output.txt
+      - name: Post Plan Comment
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- terraform-plan:load_test -->';
+            const planFile = 'environment/load_test/plan_output.txt';
+            const readIfExists = (f) => fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim() : '';
+            const changes = readIfExists('environment/load_test/plan_changes.md');
+            const policy = readIfExists('environment/load_test/plan_policy.txt');
+            const intent = readIfExists('environment/load_test/plan_intent.txt');
+            const intentResult = fs.existsSync('environment/load_test/plan_intent.txt') ? (intent ? `❌ 실패\n\n\`\`\`\n${intent}\n\`\`\`` : '✅ 일치') : '';
+            const intentSection = intentResult ? `**의도 대조** (PR 본문 \`verify-expect\`): ${intentResult}\n\n` : '';
+            const changesSection = changes ? `${changes}\n\n` : '';
+            const policySection = policy ? `**정책 검사**\n\n\`\`\`\n${policy}\n\`\`\`\n\n` : '';
+            const output = fs.existsSync(planFile) ? fs.readFileSync(planFile, 'utf8') : '';
+            const summary = output.split('\n').find(l => /^Plan:/.test(l)) || output.split('\n').find(l => /No changes/.test(l)) || (output ? '(결과 파싱 불가)' : '⚠️ plan 실행 전 단계에서 실패했습니다. 워크플로우 로그를 확인하세요.');
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = `${marker}\n## Terraform Plan: \`load_test\`\n\n${summary}\n\n${changesSection}${policySection}${intentSection}> 전체 plan 결과는 보안을 위해 댓글에 포함되지 않습니다. [워크플로우 실행 아티팩트](${runUrl})를 확인하세요.`;
 
             const { data: comments } = await github.rest.issues.listComments({
               issue_number: context.issue.number,
