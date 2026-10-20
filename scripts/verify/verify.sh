@@ -166,8 +166,9 @@ run_on_host() {
 
   if [[ " ${LAYERS[*]} " == *" l2 "* ]]; then
     # macOS 기본 bash(3.2)는 set -u 에서 빈 배열 전개를 에러로 처리하므로 문자열로 다룬다.
-    local env_list="$ENVS" detected detect_error=""
+    local env_list="$ENVS" detected detect_error="" auto=false
     if [[ -z "$env_list" ]]; then
+      auto=true
       if detected="$(detect_changed_envs "$BASE_REF")"; then
         env_list="$(tr '\n' ' ' <<<"$detected")"
         echo "==> L2 대상 환경 (자동 감지, 기준 $BASE_REF): ${env_list:-(없음)}" >&2
@@ -176,7 +177,7 @@ run_on_host() {
         echo "WARN: $detect_error" >&2
       fi
     fi
-    docker_args+=(-e "VERIFY_L2_ENVS=$env_list" -e "VERIFY_L2_DETECT_ERROR=$detect_error")
+    docker_args+=(-e "VERIFY_L2_ENVS=$env_list" -e "VERIFY_L2_DETECT_ERROR=$detect_error" -e "VERIFY_L2_AUTO=$auto")
 
     # plan 전문은 .verify/l2/ 에 남긴다. (gitignore 대상, 레포 마운트는 읽기 전용)
     mkdir -p "$REPO_ROOT/.verify"

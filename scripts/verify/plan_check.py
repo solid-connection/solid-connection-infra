@@ -6,6 +6,7 @@ subcommands
   policy    scripts/verify/policies/*.py 규칙 실행 (SEVERITY="block" 위반 시 exit 1)
   expect    작업 의도 파일과 실제 변경 대조 (불일치 시 exit 1)
   extract-expect  PR 본문의 ```verify-expect 블록을 의도 파일로 추출 (CI 용, 블록이 없으면 exit 1)
+  check-envs      의도에 선언한 환경이 모두 plan 대상인지 확인 (형식 오류 exit 1, 대상 아님 exit 3)
 
 로컬(scripts/verify/l2.sh)과 CI(.github/workflows/terraform-plan.yml)가 같은 스크립트를 사용한다.
 """
@@ -25,8 +26,16 @@ POLICY_DIR = Path(__file__).resolve().parent / "policies"
 EXPECT_BLOCK = re.compile(r"^```verify-expect[ \t]*\r?\n(.*?)^```", re.M | re.S)
 
 # 출력 순서: 위험한 변경이 먼저 보이게 한다.
-ACTION_ORDER = ["delete", "replace", "create", "update"]
-ACTION_MARK = {"delete": "🔴", "replace": "🟠", "create": "🟢", "update": "🟡"}
+# forget: Terraform 1.7+ removed 블록(destroy = false)으로 리소스를 state 에서만 제거한다. 실제 리소스는 남는다.
+ACTION_ORDER = ["delete", "replace", "forget", "create", "update"]
+ACTION_MARK = {"delete": "🔴", "replace": "🟠", "forget": "🟣", "create": "🟢", "update": "🟡"}
+
+# 의도 파일에 쓸 수 있는 환경 (verify.sh / terraform-plan.yml 의 환경과 동일)
+ENVS = ["bootstrap", "global", "prod", "stage", "monitoring", "load_test"]
+
+
+class UnsupportedPlan(Exception):
+    """처리 방법을 모르는 plan 내용. 조용히 무시하지 않고 실패로 보고한다."""
 
 # for_each 키는 tfvars 값에서 올 수 있다. (예: mysql_user.users["<DB 사용자명>"])
 # 레포가 public 이므로 PR 댓글(--markdown)에서는 키를 가리고 숫자 인덱스(count)만 남긴다.
@@ -44,7 +53,9 @@ def action_of(change):
         return "replace"
     if actions in (["no-op"], ["read"]):
         return None
-    return actions[0]
+    if len(actions) == 1 and actions[0] in ACTION_ORDER:
+        return actions[0]
+    raise UnsupportedPlan(f"지원하지 않는 plan action {actions}: {redact_keys(change['address'])} (scripts/verify/plan_check.py 갱신 필요)")
 
 
 def load_changes(plan_path):
@@ -62,7 +73,8 @@ def load_changes(plan_path):
 def cmd_summary(args):
     changes = load_changes(args.plan)
     counts = {a: sum(1 for c in changes if c[0] == a) for a in ACTION_ORDER}
-    header = ", ".join(f"{a} {counts[a]}" for a in ACTION_ORDER)
+    # forget 은 드물기 때문에 있을 때만 표시한다.
+    header = ", ".join(f"{a} {counts[a]}" for a in ACTION_ORDER if a != "forget" or counts[a])
 
     if args.markdown:
         if not changes:
@@ -75,6 +87,8 @@ def cmd_summary(args):
             print(f"| {ACTION_MARK[action]} | `{action}` | `{redact_keys(address)}` |")
         if counts["delete"] or counts["replace"]:
             print("\n> ⚠️ delete/replace 가 포함되어 있습니다. 의도한 변경인지 반드시 확인하세요.")
+        if counts["forget"]:
+            print("\n> ⚠️ forget 은 리소스를 state 에서만 제거합니다. (실제 리소스는 남고 더 이상 Terraform 이 관리하지 않음)")
         return 0
 
     if not changes:
@@ -128,9 +142,9 @@ def cmd_policy(args):
     return 1 if blocked else 0
 
 
-def parse_expect(path, env):
-    """의도 파일 형식: `<env> <action> <address glob>`, # 이후는 주석."""
-    expected = []
+def parse_expect_all(path):
+    """의도 파일 형식: `<env> <action> <address glob>`, # 이후는 주석. 모든 줄을 (env, action, pattern) 으로 반환한다."""
+    entries = []
     for lineno, raw in enumerate(Path(path).read_text(encoding="utf-8").splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
         if not line:
@@ -138,9 +152,24 @@ def parse_expect(path, env):
         parts = line.split()
         if len(parts) != 3 or parts[1] not in ACTION_ORDER:
             raise SystemExit(f"{path}:{lineno}: 형식 오류 (기대: <env> <{'|'.join(ACTION_ORDER)}> <address>): {raw}")
-        if parts[0] == env:
-            expected.append((parts[1], parts[2]))
-    return expected
+        if parts[0] not in ENVS:
+            raise SystemExit(f"{path}:{lineno}: 알 수 없는 환경 '{parts[0]}' (가능: {', '.join(ENVS)}): {raw}")
+        entries.append(tuple(parts))
+    return entries
+
+
+def parse_expect(path, env):
+    return [(action, pattern) for e, action, pattern in parse_expect_all(path) if e == env]
+
+
+def cmd_check_envs(args):
+    """환경별 plan job 은 자기 환경 줄만 대조하므로, plan 대상이 아닌 환경에 선언한 의도는 아무도 검사하지 않는다.
+    그런 선언을 조용히 버리지 않도록 별도로 확인한다."""
+    declared = sorted({e for e, _, _ in parse_expect_all(args.expect)})
+    unplanned = [e for e in declared if e not in args.planned]
+    for env in unplanned:
+        print(f"    의도에 선언했지만 plan 대상이 아닌 환경: {env} (이 변경으로 해당 환경 코드가 바뀌지 않았거나 대상에서 빠짐)")
+    return 3 if unplanned else 0
 
 
 def cmd_expect(args):
@@ -195,13 +224,23 @@ def main():
     p.add_argument("--redact", action="store_true", help="CI 댓글용: 주소의 for_each 키를 가림")
     p.set_defaults(func=cmd_expect)
 
+    p = sub.add_parser("check-envs")
+    p.add_argument("--expect", required=True)
+    p.add_argument("--planned", nargs="*", default=[], help="plan 대상 환경 목록")
+    p.set_defaults(func=cmd_check_envs)
+
     p = sub.add_parser("extract-expect")
     p.add_argument("--body-env", default="PR_BODY", help="PR 본문이 담긴 환경 변수 이름")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_extract_expect)
 
     args = parser.parse_args()
-    sys.exit(args.func(args))
+    try:
+        sys.exit(args.func(args))
+    except UnsupportedPlan as e:
+        # stdout 으로 내보내 CI 댓글과 로컬 출력 모두에 실패 사유가 보이게 한다.
+        print(f"    {e}")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

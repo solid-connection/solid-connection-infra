@@ -14,6 +14,8 @@ ARG TFLINT_VERSION=0.64.0
 ARG TRIVY_VERSION=0.75.0
 ARG ACTIONLINT_VERSION=1.7.12
 ARG SHELLCHECK_VERSION=0.11.0
+ARG AWSCLI_VERSION=2.38.2
+ARG SSM_PLUGIN_VERSION=1.2.896.0
 ARG TARGETARCH
 
 SHELL ["/bin/bash", "-Eeuo", "pipefail", "-c"]
@@ -78,12 +80,13 @@ RUN arch="$([[ "$TARGETARCH" == amd64 ]] && echo x86_64 || echo aarch64)" \
     | tar -xJf - --strip-components=1 -C /usr/local/bin "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
 
 # AWS CLI v2 + Session Manager Plugin (L2 plan 의 자격증명 확인 및 prod DB SSM 터널용)
+# 빌드 시점마다 버전이 달라지지 않도록 버전별 아카이브 경로를 사용한다.
 RUN arch="$([[ "$TARGETARCH" == amd64 ]] && echo x86_64 || echo aarch64)" \
-  && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}.zip" -o awscliv2.zip \
+  && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${arch}-${AWSCLI_VERSION}.zip" -o awscliv2.zip \
   && unzip -q awscliv2.zip \
   && ./aws/install \
   && ssm_arch="$([[ "$TARGETARCH" == amd64 ]] && echo ubuntu_64bit || echo ubuntu_arm64)" \
-  && curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/latest/${ssm_arch}/session-manager-plugin.deb" -o ssm.deb \
+  && curl -fsSL "https://s3.amazonaws.com/session-manager-downloads/plugin/${SSM_PLUGIN_VERSION}/${ssm_arch}/session-manager-plugin.deb" -o ssm.deb \
   && dpkg -i ssm.deb \
   && rm -rf /tmp/install/*
 

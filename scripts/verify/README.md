@@ -52,7 +52,7 @@ plan 전문은 `.verify/l2/<env>.plan.txt` 에 저장됩니다. (gitignore 대�
 의도에 없는 변경과, 의도했지만 plan 에 없는 변경이 모두 `FAIL` 입니다.
 
 ```text
-# <env> <create|update|delete|replace> <address, glob 허용>
+# <env> <create|update|delete|replace|forget> <address, glob 허용>
 prod  update   module.prod_stack.aws_instance.api_server
 prod  create   module.prod_stack.aws_security_group_rule.*
 stage update   module.stage_stack.aws_instance.api_server
@@ -60,7 +60,8 @@ stage update   module.stage_stack.aws_instance.api_server
 
 주소의 `*` 와 `?` 만 와일드카드이고, 대괄호는 글자 그대로입니다. (`mysql_user.users[*]`, `aws_instance.web[0]`)
 
-`replace` 는 `update` 와 구분됩니다. 교체가 의도라면 반드시 `replace` 로 적어야 합니다.
+`replace` 는 `update` 와 구분됩니다. `forget` 은 `removed` 블록으로 state 에서만 제거하는 변경입니다.
+환경 이름은 `bootstrap`, `global`, `prod`, `stage`, `monitoring`, `load_test` 만 허용되며, 선언한 환경이 plan 대상이 아니면 실패합니다. (오타나 잘못된 환경 선언이 조용히 무시되지 않도록) 교체가 의도라면 반드시 `replace` 로 적어야 합니다.
 
 ## 검증 정책 파일 (사람이 소유)
 

@@ -158,6 +158,53 @@ class PlanCheckTest(unittest.TestCase):
         self.assertIn("TEST-BROKEN", result.stdout)
         self.assertIn("규칙 실행 오류", result.stdout)
 
+    def write_plan(self, changes):
+        path = Path(self.tmp.name) / "custom_plan.json"
+        path.write_text(json.dumps({"resource_changes": changes}), encoding="utf-8")
+        return str(path)
+
+    def test_forget_is_reported_as_separate_action(self):
+        plan = self.write_plan([resource_change("aws_s3_bucket.legacy", ["forget"])])
+
+        summary = self.run_check("summary", plan, "--markdown")
+        expect = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect("prod update aws_s3_bucket.legacy\n"))
+
+        self.assertEqual(summary.returncode, 0)
+        self.assertIn("`forget`", summary.stdout)
+        self.assertIn("state 에서만 제거", summary.stdout)
+        self.assertIn("의도에 없는 변경: forget aws_s3_bucket.legacy", expect.stdout)
+
+    def test_unknown_action_fails_explicitly_on_stdout(self):
+        plan = self.write_plan([resource_change('aws_instance.x["secret_key"]', ["teleport"])])
+
+        result = self.run_check("summary", plan, "--markdown")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("지원하지 않는 plan action", result.stdout)
+        self.assertNotIn("secret_key", result.stdout)
+
+    def test_expect_rejects_unknown_environment(self):
+        expect = self.write_expect("prd update aws_instance.a\n")
+
+        result = self.run_check("expect", str(self.plan), "--env", "prod", "--expect", expect)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("알 수 없는 환경 'prd'", result.stderr)
+
+    def test_check_envs_fails_when_declared_env_is_not_planned(self):
+        expect = self.write_expect("prod update aws_instance.a\nglobal create aws_s3_bucket.b\n")
+
+        result = self.run_check("check-envs", "--expect", expect, "--planned", "global")
+
+        self.assertEqual(result.returncode, 3)
+        self.assertIn("plan 대상이 아닌 환경: prod", result.stdout)
+
+    def test_check_envs_passes_when_all_declared_envs_are_planned(self):
+        expect = self.write_expect("# 변경 없음\nprod update aws_instance.a\n")
+
+        self.assertEqual(self.run_check("check-envs", "--expect", expect, "--planned", "prod", "stage").returncode, 0)
+        self.assertEqual(self.run_check("check-envs", "--expect", self.write_expect(""), "--planned").returncode, 0)
+
     def test_expect_rejects_malformed_line(self):
         expect = self.write_expect("prod modify aws_ebs_volume.db_data\n")
 

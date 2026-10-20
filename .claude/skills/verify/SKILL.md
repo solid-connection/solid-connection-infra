@@ -22,7 +22,7 @@ description: solid-connection-infra 의 인프라 변경(Terraform, user_data �
 같은 내용을 PR 본문의 `verify-expect` 코드 블록에도 그대로 옮긴다. **CI 는 PR 본문의 블록으로 의도를 대조하고, 블록이 없으면 plan job 이 실패한다.**
 
 ```text
-# <env> <create|update|delete|replace> <address, glob 허용>
+# <env> <create|update|delete|replace|forget> <address, glob 허용>
 prod update module.prod_stack.aws_instance.api_server
 ```
 

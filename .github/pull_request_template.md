@@ -14,7 +14,7 @@
 적지 않은 환경은 "변경 없음"으로 대조하며, `#` 이후는 주석입니다.
 
 ```verify-expect
-# <env> <create|update|delete|replace> <address, * ? 와일드카드>
+# <env> <create|update|delete|replace|forget> <address, * ? 와일드카드>
 # 예) prod update module.prod_stack.aws_instance.api_server
 # 리소스 변경이 없는 PR 이면 이 주석만 남겨 둡니다.
 ```
