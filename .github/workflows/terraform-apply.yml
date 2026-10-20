@@ -40,11 +40,13 @@ jobs:
               - 'environment/prod/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
+              - 'config/side-infra/**'
               - 'config/secrets'
             stage:
               - 'environment/stage/**'
               - 'modules/app_stack/**'
               - 'modules/common/**'
+              - 'config/side-infra/**'
               - 'config/secrets'
             monitoring:
               - 'environment/monitoring/**'

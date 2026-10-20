@@ -1,0 +1,9 @@
+# L3 렌더링 템플릿 shellcheck baseline (#89 도입 시점)
+#
+# 형식: <렌더링 파일명> <SC 코드>  # 사유
+# 템플릿을 고치면 user_data 가 바뀌어 plan 에 변경이 생기므로, 기존 경고는 여기서 예외 처리하고
+# 해당 템플릿을 수정할 일이 생길 때 함께 정리한 뒤 이 줄을 지운다.
+# 이 파일은 검증 정책이므로 인프라 변경 PR 에서 새 항목을 추가하지 않는다.
+
+app_stack-mysql_setup.sh SC1087  # "$swap_file[[:space:]]" 는 배열 인덱싱이 아니라 문자열 연결로 의도대로 동작
+app_stack-mysql_setup.sh SC2034  # 대기 루프 카운터 i 미사용 (seq 반복 횟수만 사용)
