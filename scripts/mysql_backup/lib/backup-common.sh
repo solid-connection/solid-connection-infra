@@ -2,7 +2,10 @@
 set -Eeuo pipefail
 
 readonly BACKUP_ROOT="${MYSQL_BACKUP_ROOT:-/mnt/mysql-data/mysql-backup}"
+# STAGING_DIR / STATE_DIR 은 이 파일을 source 하는 bin/* 스크립트에서 사용한다.
+# shellcheck disable=SC2034
 readonly STAGING_DIR="$BACKUP_ROOT/staging"
+# shellcheck disable=SC2034
 readonly STATE_DIR="$BACKUP_ROOT/state"
 readonly MYSQL_DATA_DIR="${MYSQL_DATA_DIR:-/mnt/mysql-data/mysql}"
 readonly MYSQL_CONTAINER="${MYSQL_CONTAINER:-mysql-server}"
