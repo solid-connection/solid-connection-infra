@@ -11,7 +11,7 @@ resource "mysql_user" "users" {
 
   depends_on = [
     aws_db_instance.default,
-    aws_instance.db_server,
+    module.db_ec2,
   ]
 }
 
