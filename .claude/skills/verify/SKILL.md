@@ -19,15 +19,16 @@ description: solid-connection-infra 의 인프라 변경(Terraform, user_data �
 ### 1. 작업 전: 의도 선언
 
 코드를 고치기 전에 plan 에 나와야 할 리소스 변경을 `.verify/expect.txt` 에 적는다. (gitignore 대상)
-같은 내용을 PR 본문의 `verify-expect` 코드 블록에도 그대로 옮긴다. **CI 는 PR 본문의 블록으로 의도를 대조하고, 블록이 없으면 plan job 이 실패한다.**
+같은 내용을 PR 본문의 `verify-expect` 코드 블록에도 그대로 옮긴다. **CI 는 PR 본문의 블록으로 의도를 대조하고, plan 대상 환경이 있는데 블록이 없으면 plan job 이 실패한다.**
 
 ```text
-# <env> <create|update|delete|replace|forget|import> <address, glob 허용>
+# <env> <create|update|delete|replace|forget|import|import-update> <address, glob 허용>
 prod update module.prod_stack.aws_instance.api_server
 ```
 
 - 교체(replace)가 예상되면 반드시 `replace` 로 적는다. `update` 로 적으면 실제 교체를 놓친다.
 - 기존 리소스를 state 에 등록한다면 `import` 로 적는다. 속성이 같아도 변경으로 검출된다.
+- import 와 동시에 속성이 변경된다면 `import-update` 로 적는다.
 - 리소스 변경이 없어야 하는 작업(스크립트 수정, 리팩터링 등)이라면 빈 파일(빈 블록)을 둔다. 그러면 "변경 없음"이 검증된다.
 - 환경 줄이 없는 환경은 "변경 없음"을 의도한 것으로 본다.
 - load_test 는 평소 내려가 있어 plan 이 전체 create 로 나온다. load_test 를 건드리는 작업이면 `load_test create *` 처럼 선언한다.

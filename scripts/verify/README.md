@@ -47,12 +47,12 @@ plan 전문은 `.verify/l2/<env>.plan.txt` 에 저장됩니다. (gitignore 대�
 ### 의도 파일 (`--expect`)
 
 작업 전에 "이 변경으로 plan 에 나와야 하는 리소스 변경"을 적어 두면, 실제 plan 과 기계적으로 대조합니다.
-로컬은 `--expect` 파일로, CI(`terraform-plan.yml`)는 **PR 본문의 `verify-expect` 코드 블록**으로 대조합니다. PR 본문에 블록이 없으면 plan job 이 실패합니다.
+로컬은 `--expect` 파일로, CI(`terraform-plan.yml`)는 **PR 본문의 `verify-expect` 코드 블록**으로 대조합니다. plan 대상 환경이 있는데 PR 본문에 블록이 없으면 plan job 이 실패합니다. plan 대상 환경이 없으면 블록을 생략할 수 있습니다.
 적지 않은 환경은 "변경 없음"을 의도한 것으로 봅니다. load_test 는 평소 내려가 있어 전체 create 로 나오므로 `load_test create *` 처럼 선언합니다.
 의도에 없는 변경과, 의도했지만 plan 에 없는 변경이 모두 `FAIL` 입니다.
 
 ```text
-# <env> <create|update|delete|replace|forget|import> <address, glob 허용>
+# <env> <create|update|delete|replace|forget|import|import-update> <address, glob 허용>
 prod  update   module.prod_stack.aws_instance.api_server
 prod  create   module.prod_stack.aws_security_group_rule.*
 stage update   module.stage_stack.aws_instance.api_server
@@ -60,8 +60,8 @@ stage update   module.stage_stack.aws_instance.api_server
 
 주소의 `*` 와 `?` 만 와일드카드이고, 대괄호는 글자 그대로입니다. (`mysql_user.users[*]`, `aws_instance.web[0]`)
 
-`replace` 는 `update` 와 구분됩니다. `forget` 은 `removed` 블록으로 state 에서만 제거하는 변경입니다. `import` 는 기존 리소스를 state 에 등록하며, 속성 변경이 없어도 의도에 선언해야 합니다.
-환경 이름은 `bootstrap`, `global`, `prod`, `stage`, `monitoring`, `load_test` 만 허용되며, 선언한 환경이 plan 대상이 아니면 실패합니다. (오타나 잘못된 환경 선언이 조용히 무시되지 않도록) 교체가 의도라면 반드시 `replace` 로 적어야 합니다.
+`replace` 는 `update` 와 구분됩니다. `forget` 은 `removed` 블록으로 state 에서만 제거하는 변경입니다. `import` 는 기존 리소스를 state 에 등록하며, 속성 변경이 없어도 의도에 선언해야 합니다. import 와 동시에 속성이 바뀌면 `import-update` 로 선언합니다.
+환경 이름은 `bootstrap`, `global`, `prod`, `stage`, `monitoring`, `load_test` 만 허용됩니다. 자동 감지에서는 선언한 환경이 plan 대상이 아니면 실패합니다. `--env` 로 일부만 실행하면 선택하지 않은 선언 환경은 `SKIPPED`로 기록되며, 기본 모드에서는 종료 실패가 아닙니다. 전체 검증에서 `SKIPPED`도 실패로 처리하려면 `--strict`를 사용합니다. 교체가 의도라면 반드시 `replace` 로 적어야 합니다.
 
 ## 검증 정책 파일 (사람이 소유)
 

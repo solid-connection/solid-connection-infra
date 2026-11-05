@@ -14,7 +14,14 @@ section "L1 정적 검사"
 run_check "$LAYER" "terraform fmt" \
   terraform fmt -check -recursive -diff bootstrap environment modules scripts
 
-# 2. 문법/참조 검증 (backend 없이 init 하므로 자격증명이 필요 없다)
+# 2. IaC 보안 스캔 (Terraform init 이 생성하는 모듈 복사본은 검사 대상에서 제외)
+run_check "$LAYER" "trivy config" \
+  trivy config --quiet --exit-code 1 --severity HIGH,CRITICAL \
+    --ignorefile .trivyignore.yaml \
+    --skip-dirs config/secrets --skip-dirs '**/.terraform' \
+    .
+
+# 3. 문법/참조 검증 (backend 없이 init 하므로 자격증명이 필요 없다)
 validate_dir() {
   terraform -chdir="$1" init -backend=false -input=false >/dev/null
   terraform -chdir="$1" validate -no-color
@@ -23,16 +30,9 @@ for dir in "${TF_ROOT_DIRS[@]}" "${TF_MODULE_DIRS[@]}"; do
   run_check "$LAYER" "terraform validate ($dir)" validate_dir "$dir"
 done
 
-# 3. Terraform lint (AWS ruleset 포함, environment/* 에서 호출하는 로컬 모듈까지 검사)
+# 4. Terraform lint (AWS ruleset 포함, environment/* 에서 호출하는 로컬 모듈까지 검사)
 run_check "$LAYER" "tflint" \
   tflint --recursive --config /opt/tflint/tflint.hcl --format compact
-
-# 4. IaC 보안 스캔 (HIGH 이상만 실패 처리, 예외는 .trivyignore.yaml 에 사유와 함께 기록)
-run_check "$LAYER" "trivy config" \
-  trivy config --quiet --exit-code 1 --severity HIGH,CRITICAL \
-    --ignorefile .trivyignore.yaml \
-    --skip-dirs config/secrets --skip-dirs '**/.terraform' \
-    .
 
 # 5. 셸 스크립트 lint (warning 이상만 실패 처리)
 mapfile -t shell_scripts < <(list_shell_scripts)

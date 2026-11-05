@@ -10,11 +10,11 @@
 
 ## 의도 (L2)
 
-이 PR 로 plan 에 나와야 하는 리소스 변경입니다. CI 가 아래 블록과 실제 plan 을 대조합니다. (블록이 없으면 plan job 실패)
+이 PR 로 plan 에 나와야 하는 리소스 변경입니다. CI 가 아래 블록과 실제 plan 을 대조합니다. (plan 대상 환경이 있으면 블록 필수, 없으면 생략 가능)
 적지 않은 환경은 "변경 없음"으로 대조하며, `#` 이후는 주석입니다.
 
 ```verify-expect
-# <env> <create|update|delete|replace|forget|import> <address, * ? 와일드카드>
+# <env> <create|update|delete|replace|forget|import|import-update> <address, * ? 와일드카드>
 # 예) prod update module.prod_stack.aws_instance.api_server
 # 리소스 변경이 없는 PR 이면 이 주석만 남겨 둡니다.
 ```

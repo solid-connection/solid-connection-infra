@@ -190,6 +190,20 @@ class PlanCheckTest(unittest.TestCase):
         self.assertIn("의도에 없는 변경: import aws_s3_bucket.existing", unexpected.stdout)
         self.assertEqual(declared.returncode, 0, declared.stdout)
 
+    def test_import_with_update_requires_distinct_intent(self):
+        imported = resource_change("aws_s3_bucket.existing", ["update"])
+        imported["change"]["importing"] = {"id": "existing-bucket"}
+        plan = self.write_plan([imported])
+
+        summary = self.run_check("summary", plan, "--markdown")
+        wrong_intent = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect("prod import aws_s3_bucket.existing\n"))
+        right_intent = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect("prod import-update aws_s3_bucket.existing\n"))
+
+        self.assertIn("`import-update`", summary.stdout)
+        self.assertEqual(wrong_intent.returncode, 1)
+        self.assertIn("의도에 없는 변경: import-update", wrong_intent.stdout)
+        self.assertEqual(right_intent.returncode, 0, right_intent.stdout)
+
     def test_unknown_action_fails_explicitly_on_stdout(self):
         plan = self.write_plan([resource_change('aws_instance.x["secret_key"]', ["teleport"])])
 
