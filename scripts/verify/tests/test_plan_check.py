@@ -204,6 +204,31 @@ class PlanCheckTest(unittest.TestCase):
         self.assertIn("의도에 없는 변경: import-update", wrong_intent.stdout)
         self.assertEqual(right_intent.returncode, 0, right_intent.stdout)
 
+    def test_noop_move_requires_source_and_destination_intent(self):
+        moved = resource_change("aws_instance.new", ["no-op"])
+        moved["previous_address"] = "aws_instance.old"
+        plan = self.write_plan([moved])
+
+        summary = self.run_check("summary", plan, "--markdown")
+        empty = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect(""))
+        declared = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect("prod move aws_instance.old->aws_instance.new\n"))
+
+        self.assertIn("aws_instance.old->aws_instance.new", summary.stdout)
+        self.assertEqual(empty.returncode, 1)
+        self.assertIn("의도에 없는 변경: move aws_instance.old->aws_instance.new", empty.stdout)
+        self.assertEqual(declared.returncode, 0, declared.stdout)
+
+    def test_move_with_update_is_distinct_from_plain_move(self):
+        moved = resource_change("aws_instance.new", ["update"])
+        moved["previous_address"] = "aws_instance.old"
+        plan = self.write_plan([moved])
+
+        wrong = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect("prod move aws_instance.old->aws_instance.new\n"))
+        summary = self.run_check("summary", plan, "--markdown")
+
+        self.assertEqual(wrong.returncode, 1)
+        self.assertIn("`move-update`", summary.stdout)
+
     def test_unknown_action_fails_explicitly_on_stdout(self):
         plan = self.write_plan([resource_change('aws_instance.x["secret_key"]', ["teleport"])])
 

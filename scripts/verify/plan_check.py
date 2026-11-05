@@ -27,8 +27,8 @@ EXPECT_BLOCK = re.compile(r"^```verify-expect[ \t]*\r?\n(.*?)^```", re.M | re.S)
 
 # 출력 순서: 위험한 변경이 먼저 보이게 한다.
 # forget: Terraform 1.7+ removed 블록(destroy = false)으로 리소스를 state 에서만 제거한다. 실제 리소스는 남는다.
-ACTION_ORDER = ["delete", "replace", "forget", "import-update", "import", "create", "update"]
-ACTION_MARK = {"delete": "🔴", "replace": "🟠", "forget": "🟣", "import-update": "🟠", "import": "🔵", "create": "🟢", "update": "🟡"}
+ACTION_ORDER = ["delete", "replace", "forget", "move-update", "move", "import-update", "import", "create", "update"]
+ACTION_MARK = {"delete": "🔴", "replace": "🟠", "forget": "🟣", "move-update": "🟠", "move": "🔵", "import-update": "🟠", "import": "🔵", "create": "🟢", "update": "🟡"}
 
 # 의도 파일에 쓸 수 있는 환경 (verify.sh / terraform-plan.yml 의 환경과 동일)
 ENVS = ["bootstrap", "global", "prod", "stage", "monitoring", "load_test"]
@@ -55,6 +55,12 @@ def action_of(change):
         if actions in (["no-op"], ["create"]):
             return "import"
         raise UnsupportedPlan(f"지원하지 않는 import plan action {actions}: {redact_keys(change['address'])}")
+    if "previous_address" in change:
+        if actions == ["no-op"]:
+            return "move"
+        if actions == ["update"]:
+            return "move-update"
+        raise UnsupportedPlan(f"지원하지 않는 move plan action {actions}: {redact_keys(change['address'])}")
     if actions in (["delete", "create"], ["create", "delete"]):
         return "replace"
     if actions in (["no-op"], ["read"]):
@@ -71,7 +77,8 @@ def load_changes(plan_path):
     for rc in plan.get("resource_changes", []):
         action = action_of(rc)
         if action:
-            changes.append((action, rc["address"], rc))
+            address = f"{rc['previous_address']}->{rc['address']}" if "previous_address" in rc else rc["address"]
+            changes.append((action, address, rc))
     changes.sort(key=lambda c: (ACTION_ORDER.index(c[0]), c[1]))
     return changes
 
@@ -97,6 +104,8 @@ def cmd_summary(args):
             print("\n> ⚠️ forget 은 리소스를 state 에서만 제거합니다. (실제 리소스는 남고 더 이상 Terraform 이 관리하지 않음)")
         if counts["import"] or counts["import-update"]:
             print("\n> ⚠️ import 는 기존 리소스를 Terraform state 에 등록합니다. import-update 는 등록과 속성 변경을 함께 수행합니다.")
+        if counts["move"] or counts["move-update"]:
+            print("\n> ⚠️ move 는 Terraform state 의 리소스 주소를 변경합니다. move-update 는 주소와 속성을 함께 변경합니다.")
         return 0
 
     if not changes:

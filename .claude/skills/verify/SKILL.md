@@ -22,13 +22,14 @@ description: solid-connection-infra 의 인프라 변경(Terraform, user_data �
 같은 내용을 PR 본문의 `verify-expect` 코드 블록에도 그대로 옮긴다. **CI 는 PR 본문의 블록으로 의도를 대조하고, plan 대상 환경이 있는데 블록이 없으면 plan job 이 실패한다.**
 
 ```text
-# <env> <create|update|delete|replace|forget|import|import-update> <address, glob 허용>
+# <env> <create|update|delete|replace|forget|import|import-update|move|move-update> <address, glob 허용>
 prod update module.prod_stack.aws_instance.api_server
 ```
 
 - 교체(replace)가 예상되면 반드시 `replace` 로 적는다. `update` 로 적으면 실제 교체를 놓친다.
 - 기존 리소스를 state 에 등록한다면 `import` 로 적는다. 속성이 같아도 변경으로 검출된다.
 - import 와 동시에 속성이 변경된다면 `import-update` 로 적는다.
+- 주소 이동은 `move <기존주소>-><새주소>`, 속성 변경도 있으면 `move-update` 로 적는다.
 - 리소스 변경이 없어야 하는 작업(스크립트 수정, 리팩터링 등)이라면 빈 파일(빈 블록)을 둔다. 그러면 "변경 없음"이 검증된다.
 - 환경 줄이 없는 환경은 "변경 없음"을 의도한 것으로 본다.
 - load_test 는 평소 내려가 있어 plan 이 전체 create 로 나온다. load_test 를 건드리는 작업이면 `load_test create *` 처럼 선언한다.
@@ -42,7 +43,12 @@ scripts/verify/verify.sh
 `FAIL` 이 있으면 출력된 로그를 보고 고친 뒤 다시 실행한다. 모두 `PASS` 가 될 때까지 반복한다.
 
 - `terraform fmt` 실패: 호스트의 terraform 버전이 다를 수 있으므로, 검증 이미지로 포맷한다.
-  `docker run --rm -v "$PWD:/workspace" -w /workspace "$(scripts/verify/verify.sh --print-image)" terraform fmt -recursive bootstrap environment modules scripts`
+  먼저 `scripts/verify/verify.sh` 로 검증 이미지를 빌드한다. 이후 아래처럼 로컬 이미지 존재를 확인하고 포맷한다.
+  ```bash
+  image="$(scripts/verify/verify.sh --print-image)"
+  docker image inspect "$image" >/dev/null 2>&1 || { echo "검증 이미지를 먼저 빌드하세요" >&2; exit 1; }
+  docker run --pull=never --rm -v "$PWD:/workspace" -w /workspace "$image" terraform fmt -recursive bootstrap environment modules scripts
+  ```
 - 새 `.tftpl` 을 추가했거나 템플릿 변수를 바꿨다면 `scripts/verify/render/templates.tf` 도 갱신한다. (빠뜨리면 L3 `template inventory` 가 실패한다)
 
 ### 3. Terraform 변경이 있으면: L2

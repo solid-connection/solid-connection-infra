@@ -52,7 +52,7 @@ plan 전문은 `.verify/l2/<env>.plan.txt` 에 저장됩니다. (gitignore 대�
 의도에 없는 변경과, 의도했지만 plan 에 없는 변경이 모두 `FAIL` 입니다.
 
 ```text
-# <env> <create|update|delete|replace|forget|import|import-update> <address, glob 허용>
+# <env> <create|update|delete|replace|forget|import|import-update|move|move-update> <address, glob 허용>
 prod  update   module.prod_stack.aws_instance.api_server
 prod  create   module.prod_stack.aws_security_group_rule.*
 stage update   module.stage_stack.aws_instance.api_server
@@ -61,6 +61,7 @@ stage update   module.stage_stack.aws_instance.api_server
 주소의 `*` 와 `?` 만 와일드카드이고, 대괄호는 글자 그대로입니다. (`mysql_user.users[*]`, `aws_instance.web[0]`)
 
 `replace` 는 `update` 와 구분됩니다. `forget` 은 `removed` 블록으로 state 에서만 제거하는 변경입니다. `import` 는 기존 리소스를 state 에 등록하며, 속성 변경이 없어도 의도에 선언해야 합니다. import 와 동시에 속성이 바뀌면 `import-update` 로 선언합니다.
+`moved` 블록으로 주소만 바뀌면 `move <기존주소>-><새주소>`, 속성 변경도 있으면 `move-update <기존주소>-><새주소>` 로 선언합니다. 화살표 앞뒤에 공백을 넣지 않습니다.
 환경 이름은 `bootstrap`, `global`, `prod`, `stage`, `monitoring`, `load_test` 만 허용됩니다. 자동 감지에서는 선언한 환경이 plan 대상이 아니면 실패합니다. `--env` 로 일부만 실행하면 선택하지 않은 선언 환경은 `SKIPPED`로 기록되며, 기본 모드에서는 종료 실패가 아닙니다. 전체 검증에서 `SKIPPED`도 실패로 처리하려면 `--strict`를 사용합니다. 교체가 의도라면 반드시 `replace` 로 적어야 합니다.
 
 ## 검증 정책 파일 (사람이 소유)
