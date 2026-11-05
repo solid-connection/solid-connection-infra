@@ -27,8 +27,8 @@ EXPECT_BLOCK = re.compile(r"^```verify-expect[ \t]*\r?\n(.*?)^```", re.M | re.S)
 
 # 출력 순서: 위험한 변경이 먼저 보이게 한다.
 # forget: Terraform 1.7+ removed 블록(destroy = false)으로 리소스를 state 에서만 제거한다. 실제 리소스는 남는다.
-ACTION_ORDER = ["delete", "replace", "forget", "create", "update"]
-ACTION_MARK = {"delete": "🔴", "replace": "🟠", "forget": "🟣", "create": "🟢", "update": "🟡"}
+ACTION_ORDER = ["delete", "replace", "forget", "import", "create", "update"]
+ACTION_MARK = {"delete": "🔴", "replace": "🟠", "forget": "🟣", "import": "🔵", "create": "🟢", "update": "🟡"}
 
 # 의도 파일에 쓸 수 있는 환경 (verify.sh / terraform-plan.yml 의 환경과 동일)
 ENVS = ["bootstrap", "global", "prod", "stage", "monitoring", "load_test"]
@@ -49,6 +49,10 @@ def redact_keys(address):
 def action_of(change):
     """resource_changes[].change.actions 를 단일 action 으로 정규화한다."""
     actions = change["change"]["actions"]
+    if "importing" in change["change"]:
+        if actions in (["no-op"], ["create"], ["update"]):
+            return "import"
+        raise UnsupportedPlan(f"지원하지 않는 import plan action {actions}: {redact_keys(change['address'])}")
     if actions in (["delete", "create"], ["create", "delete"]):
         return "replace"
     if actions in (["no-op"], ["read"]):
@@ -89,6 +93,8 @@ def cmd_summary(args):
             print("\n> ⚠️ delete/replace 가 포함되어 있습니다. 의도한 변경인지 반드시 확인하세요.")
         if counts["forget"]:
             print("\n> ⚠️ forget 은 리소스를 state 에서만 제거합니다. (실제 리소스는 남고 더 이상 Terraform 이 관리하지 않음)")
+        if counts["import"]:
+            print("\n> ⚠️ import 는 기존 리소스를 Terraform state 에 등록합니다.")
         return 0
 
     if not changes:

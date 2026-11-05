@@ -174,6 +174,22 @@ class PlanCheckTest(unittest.TestCase):
         self.assertIn("state 에서만 제거", summary.stdout)
         self.assertIn("의도에 없는 변경: forget aws_s3_bucket.legacy", expect.stdout)
 
+    def test_noop_import_requires_explicit_intent(self):
+        imported = resource_change("aws_s3_bucket.existing", ["no-op"])
+        imported["change"]["importing"] = {"id": "existing-bucket"}
+        plan = self.write_plan([imported])
+        empty_expect = self.write_expect("")
+
+        summary = self.run_check("summary", plan, "--markdown")
+        unexpected = self.run_check("expect", plan, "--env", "prod", "--expect", empty_expect)
+        declared = self.run_check("expect", plan, "--env", "prod", "--expect", self.write_expect("prod import aws_s3_bucket.existing\n"))
+
+        self.assertEqual(summary.returncode, 0)
+        self.assertIn("`import`", summary.stdout)
+        self.assertEqual(unexpected.returncode, 1)
+        self.assertIn("의도에 없는 변경: import aws_s3_bucket.existing", unexpected.stdout)
+        self.assertEqual(declared.returncode, 0, declared.stdout)
+
     def test_unknown_action_fails_explicitly_on_stdout(self):
         plan = self.write_plan([resource_change('aws_instance.x["secret_key"]', ["teleport"])])
 
