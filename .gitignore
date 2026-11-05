@@ -18,5 +18,8 @@ __pycache__/
 .idea/
 .DS_Store
 
+# --- 검증 결과 (scripts/verify) ---
+.verify/
+
 # --- AGENTS ---
 AGENTS.local.md

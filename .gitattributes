@@ -1,4 +1,7 @@
-*.sh text eol=lf
-*.tftpl text eol=lf
-*.yml text eol=lf
-*.yaml text eol=lf
+# 모든 텍스트 파일은 OS와 무관하게 LF로 checkout 한다.
+# 확장자 없는 스크립트(scripts/mysql_backup/bin/*)와 systemd unit 도 서버에서 그대로 실행되므로 CRLF 가 섞이면 안 된다.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.zip binary

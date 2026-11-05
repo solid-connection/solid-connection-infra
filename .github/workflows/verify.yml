@@ -1,0 +1,40 @@
+name: Verify
+
+# L1 정적 검사 + L3 동작 테스트 (scripts/verify)
+# 로컬과 같은 검증 이미지/스크립트를 사용한다. L2 plan 검사는 terraform-plan.yml 에서 수행한다.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve Verify Image
+        id: image
+        run: echo "name=$(scripts/verify/verify.sh --print-image)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # verify.sh 는 이미지가 없으면 직접 빌드하지만, CI 에서는 레이어 캐시를 쓰기 위해 미리 빌드한다.
+      - name: Build Verify Image
+        uses: docker/build-push-action@v6
+        with:
+          context: scripts/verify/docker
+          load: true
+          tags: ${{ steps.image.outputs.name }}
+          labels: solid-connection.verify=true
+          cache-from: type=gha,scope=verify-image
+          cache-to: type=gha,mode=max,scope=verify-image
+
+      - name: L1 + L3
+        run: scripts/verify/verify.sh l1 l3 --strict

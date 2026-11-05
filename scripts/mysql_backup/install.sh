@@ -81,6 +81,8 @@ load_candidate_config() {
     case "$key" in
       MYSQL_BACKUP_BUCKET|MYSQL_DATABASE|AWS_REGION|ALARM_API_HOST|ALARM_API_PORTS|ALARM_API_HEALTH_PORTS|ALARM_API_TOKEN)
         printf -v "$key" '%s' "$value"
+        # key 는 위 case 에서 허용한 변수 이름이며, 그 이름의 변수를 export 하는 것이 의도다.
+        # shellcheck disable=SC2163
         export "$key"
         ;;
       *)

@@ -18,11 +18,11 @@ resource "aws_lambda_function" "resizing_img_func" {
   handler       = var.resizing_img_func_handler
   runtime       = var.resizing_img_func_runtime
 
-  filename      = data.archive_file.resizing_zip.output_path
+  filename         = data.archive_file.resizing_zip.output_path
   source_code_hash = data.archive_file.resizing_zip.output_base64sha256
 
-  layers        = var.resizing_img_func_layers
-  timeout       = 15
+  layers  = var.resizing_img_func_layers
+  timeout = 15
 }
 
 resource "aws_lambda_function" "thumbnail_generating_func" {
@@ -34,8 +34,8 @@ resource "aws_lambda_function" "thumbnail_generating_func" {
   filename         = data.archive_file.thumbnail_zip.output_path
   source_code_hash = data.archive_file.thumbnail_zip.output_base64sha256
 
-  layers        = var.thumbnail_generating_func_layers
-  timeout       = 15
+  layers  = var.thumbnail_generating_func_layers
+  timeout = 15
 }
 
 # 3. Lambda Privileges Definition

@@ -55,7 +55,11 @@ resource "aws_iam_role" "github_actions" {
           "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
         }
         StringLike = {
-          "token.actions.githubusercontent.com:sub" = "repo:solid-connection/solid-connection-infra:ref:refs/heads/main"
+          # environment:prod-db 는 mysql-backup-deploy.yml (environment: prod-db) 가 같은 Role 을 사용하기 위한 조건이다.
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:solid-connection/solid-connection-infra:ref:refs/heads/main",
+            "repo:solid-connection/solid-connection-infra:environment:prod-db",
+          ]
         }
       }
     }]
