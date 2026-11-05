@@ -28,11 +28,13 @@ run_check "$LAYER" "tflint" \
   tflint --recursive --config /opt/tflint/tflint.hcl --format compact
 
 # 4. IaC 보안 스캔 (HIGH 이상만 실패 처리, 예외는 .trivyignore.yaml 에 사유와 함께 기록)
-# 다운로드된 Terraform 모듈은 원본 모듈과 별도 경로로 다시 보고될 수 있어 제외한다.
+# Trivy 가 로컬 모듈을 가상 경로 modules/app_stack/modules/* 로 중복 보고할 수 있다.
+# 실제 소스 modules/app_stack/*.tf 는 계속 검사하고 중복 경로만 제외한다.
 run_check "$LAYER" "trivy config" \
   trivy config --quiet --exit-code 1 --severity HIGH,CRITICAL \
-    --ignorefile .trivyignore.yaml --tf-exclude-downloaded-modules \
+    --ignorefile .trivyignore.yaml \
     --skip-dirs config/secrets --skip-dirs '**/.terraform' \
+    --skip-dirs 'modules/app_stack/modules/**' \
     .
 
 # 5. 셸 스크립트 lint (warning 이상만 실패 처리)
