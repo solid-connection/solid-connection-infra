@@ -104,7 +104,11 @@ variable "load_test_db_instance_name" {
 variable "load_test_db_instance_type" {
   description = "load-test MySQL EC2 인스턴스 타입입니다."
   type        = string
-  default     = "t4g.medium"
+
+  validation {
+    condition     = length(trimspace(var.load_test_db_instance_type)) > 0
+    error_message = "load_test_db_instance_type must be supplied by Load Test Start."
+  }
 }
 
 variable "load_test_db_ami_id" {

@@ -678,8 +678,10 @@ jobs:
         id: plan
         working-directory: environment/load_test
         run: |
+          # Plan-only fixture. Load Test Start still requires an explicit instance type.
           terraform plan -no-color -out=tfplan \
             -var-file="../../config/secrets/load_test.tfvars" \
+            -var="load_test_db_instance_type=t4g.medium" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Check Plan (L2)

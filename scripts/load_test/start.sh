@@ -4,6 +4,7 @@ set -euo pipefail
 TERRAFORM_DIR="environment/load_test"
 VAR_FILE="../../config/secrets/load_test.tfvars"
 DATABASE_NAME=""
+DB_INSTANCE_TYPE=""
 SWITCH_STAGE_TO_LOADTEST="false"
 STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
@@ -18,6 +19,7 @@ Options:
   --terraform-dir PATH          Default: environment/load_test
   --var-file PATH               Default: ../../config/secrets/load_test.tfvars
   --database-name VALUE         Default: Terraform output load_test_db_name
+  --db-instance-type VALUE      Required when applying Terraform
   --switch-stage-to-loadtest    Restart stage app through SSM with dev,loadtest profiles
   --stage-app-dir PATH          Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE    Default: docker-compose.dev.yml
@@ -32,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --terraform-dir) TERRAFORM_DIR="$2"; shift 2 ;;
     --var-file) VAR_FILE="$2"; shift 2 ;;
     --database-name) DATABASE_NAME="$2"; shift 2 ;;
+    --db-instance-type) DB_INSTANCE_TYPE="$2"; shift 2 ;;
     --switch-stage-to-loadtest) SWITCH_STAGE_TO_LOADTEST="true"; shift ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
@@ -160,8 +163,10 @@ wait_for_load_test_db_restore() {
 }
 
 if [[ "$SKIP_TERRAFORM_APPLY" != "true" ]]; then
+  require_value --db-instance-type "$DB_INSTANCE_TYPE"
   terraform -chdir="$TERRAFORM_DIR" init
-  terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE"
+  terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE" \
+    -var="load_test_db_instance_type=$DB_INSTANCE_TYPE"
 fi
 
 stage_instance_id="$(tf_output stage_api_instance_id)"
@@ -179,17 +184,10 @@ if [[ "$SWITCH_STAGE_TO_LOADTEST" == "true" ]]; then
   stage_commands_json="$(jq -cn \
     --arg app_dir "$STAGE_APP_DIR" \
     --arg compose_file "$STAGE_COMPOSE_FILE" \
+    --rawfile script scripts/load_test/stage_app.sh \
     '{
       commands: [
-        "set -euo pipefail",
-        "cd \($app_dir)",
-        "CURRENT_IMAGE=$(docker inspect -f '\''{{.Config.Image}}'\'' solid-connection-dev 2>/dev/null || true)",
-        "if [ -z \"$CURRENT_IMAGE\" ]; then echo \"solid-connection-dev container is not running; cannot infer image tag\" >&2; exit 1; fi",
-        "OWNER_LOWERCASE=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#^ghcr.io/([^/]+)/.*#\\1#'\'')",
-        "IMAGE_TAG=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#.*:([^:]+)$#\\1#'\'')",
-        "cat > docker-compose.loadtest.override.yml <<'\''YAML'\''\nservices:\n  solid-connection-dev:\n    environment:\n      - SPRING_PROFILES_ACTIVE=dev,loadtest\n      - AWS_REGION=ap-northeast-2\n      - SPRING_DATA_REDIS_HOST=127.0.0.1\n      - SPRING_DATA_REDIS_PORT=6379\nYAML",
-        "docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml down || true",
-        "OWNER_LOWERCASE=\"$OWNER_LOWERCASE\" IMAGE_TAG=\"$IMAGE_TAG\" docker compose -f \($compose_file) -f docker-compose.loadtest.override.yml up -d solid-connection-dev"
+        "STAGE_MODE=loadtest STAGE_APP_DIR=\($app_dir | @sh) STAGE_COMPOSE_FILE=\($compose_file | @sh) bash -s <<\\STAGE_APP_SCRIPT\n\($script)\nSTAGE_APP_SCRIPT"
       ]
     }')"
 

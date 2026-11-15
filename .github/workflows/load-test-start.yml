@@ -3,6 +3,10 @@ name: Load Test Start
 on:
   workflow_dispatch:
     inputs:
+      load_test_db_instance_type:
+        description: "Load-test MySQL EC2 instance type (required; no default)"
+        required: true
+        type: string
       switch_stage_to_loadtest:
         description: "Restart stage app with dev,loadtest profiles"
         required: true
@@ -46,7 +50,14 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Start load test environment
+        env:
+          DB_INSTANCE_TYPE: ${{ inputs.load_test_db_instance_type }}
         run: |
+          if [ -z "$DB_INSTANCE_TYPE" ]; then
+            echo "load_test_db_instance_type is required" >&2
+            exit 1
+          fi
+
           export TF_VAR_load_generator_instance_type="c7i.large"
           export TF_VAR_create_load_generator="false"
 
@@ -54,7 +65,7 @@ jobs:
             export TF_VAR_load_generator_instance_profile_name="${{ vars.LOAD_GENERATOR_INSTANCE_PROFILE_NAME }}"
           fi
 
-          args=()
+          args=(--db-instance-type "$DB_INSTANCE_TYPE")
 
           if [ "${{ inputs.switch_stage_to_loadtest }}" = "true" ]; then
             args+=(--switch-stage-to-loadtest)

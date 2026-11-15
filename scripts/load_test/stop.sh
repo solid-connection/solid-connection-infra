@@ -50,6 +50,13 @@ require_command terraform
 require_command aws
 require_command jq
 
+if [[ "$RESTORE_STAGE_DEV" != "true" && "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
+  echo "Destroy requires --restore-stage-dev so stage cannot lose its DB" >&2
+  exit 1
+fi
+
+source scripts/load_test/terraform_db_type.sh
+
 tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
 }
@@ -111,17 +118,10 @@ if [[ "$RESTORE_STAGE_DEV" == "true" ]]; then
   stage_commands_json="$(jq -cn \
     --arg app_dir "$STAGE_APP_DIR" \
     --arg compose_file "$STAGE_COMPOSE_FILE" \
+    --rawfile script scripts/load_test/stage_app.sh \
     '{
       commands: [
-        "set -euo pipefail",
-        "cd \($app_dir)",
-        "CURRENT_IMAGE=$(docker inspect -f '\''{{.Config.Image}}'\'' solid-connection-dev 2>/dev/null || true)",
-        "if [ -z \"$CURRENT_IMAGE\" ]; then echo \"solid-connection-dev container is not running; cannot infer image tag\" >&2; exit 1; fi",
-        "OWNER_LOWERCASE=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#^ghcr.io/([^/]+)/.*#\\1#'\'')",
-        "IMAGE_TAG=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#.*:([^:]+)$#\\1#'\'')",
-        "rm -f docker-compose.loadtest.override.yml",
-        "docker compose -f \($compose_file) down || true",
-        "OWNER_LOWERCASE=\"$OWNER_LOWERCASE\" IMAGE_TAG=\"$IMAGE_TAG\" docker compose -f \($compose_file) up -d"
+        "STAGE_MODE=dev STAGE_APP_DIR=\($app_dir | @sh) STAGE_COMPOSE_FILE=\($compose_file | @sh) bash -s <<\\STAGE_APP_SCRIPT\n\($script)\nSTAGE_APP_SCRIPT"
       ]
     }')"
 
@@ -129,7 +129,9 @@ if [[ "$RESTORE_STAGE_DEV" == "true" ]]; then
 fi
 
 if [[ "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
-  terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE"
+  db_instance_type="$(load_test_db_instance_type_from_state)"
+  terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE" \
+    -var="load_test_db_instance_type=$db_instance_type"
 fi
 
 echo "Load test environment has been stopped."

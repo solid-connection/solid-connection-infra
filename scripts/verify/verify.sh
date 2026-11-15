@@ -192,7 +192,7 @@ run_on_host() {
       docker_args+=(-v "$aws_dir:/root/.aws:ro")
     fi
     local var
-    for var in AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN; do
+    for var in AWS_PROFILE AWS_REGION AWS_DEFAULT_REGION AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN TF_VAR_load_test_db_instance_type; do
       [[ -n "${!var:-}" ]] && docker_args+=(-e "$var")
     done
   fi

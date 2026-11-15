@@ -13,6 +13,11 @@ output "load_test_db_instance_id" {
   value       = aws_instance.load_test_db.id
 }
 
+output "load_test_db_instance_type" {
+  description = "Load-test MySQL EC2 instance type selected by Start"
+  value       = aws_instance.load_test_db.instance_type
+}
+
 output "load_test_db_private_ip" {
   description = "Load-test MySQL EC2 private IP"
   value       = aws_instance.load_test_db.private_ip
