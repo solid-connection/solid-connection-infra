@@ -1,5 +1,6 @@
 """Guard tests for the load-test entry points without AWS or Terraform changes."""
 
+import json
 import os
 import subprocess
 import tempfile
@@ -18,6 +19,7 @@ class WorkflowGuardTests(unittest.TestCase):
         self.bin = self.root / "bin"
         self.bin.mkdir()
         self.log = self.root / "calls.log"
+        self.ssm_parameters = self.root / "ssm-parameters.json"
         self._command(
             "terraform",
             r'''#!/usr/bin/env bash
@@ -36,7 +38,16 @@ esac
             r'''#!/usr/bin/env bash
 printf 'aws %s\n' "$*" >> "$MOCK_LOG"
 case "$*" in
-  *"ssm send-command"*) echo command-123 ;;
+  *"ssm send-command"*)
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "--parameters" ]]; then
+        printf '%s' "$2" > "$MOCK_SSM_PARAMETERS"
+        break
+      fi
+      shift
+    done
+    echo command-123 ;;
+  *"ssm describe-instance-information"*) echo Online ;;
   *"ssm get-command-invocation"*"--query Status"*) echo "$MOCK_SSM_STATUS" ;;
 esac
 ''',
@@ -53,6 +64,7 @@ esac
         env.update(
             PATH=f"{self.bin}:{env['PATH']}",
             MOCK_LOG=str(self.log),
+            MOCK_SSM_PARAMETERS=str(self.ssm_parameters),
             MOCK_SSM_STATUS=status,
             MOCK_OLD_STATE="true" if old_state else "false",
         )
@@ -67,17 +79,38 @@ esac
         calls = self.log.read_text().splitlines() if self.log.exists() else []
         return result, calls
 
+    def assert_stage_ssm_payload_runs(self, expected_mode):
+        command = json.loads(self.ssm_parameters.read_text())["commands"][0]
+        self.assertIn(f"STAGE_MODE={expected_mode} ", command)
+        lines = command.splitlines()
+        self.assertEqual(lines[-1], "STAGE_APP_SCRIPT")
+        self.assertEqual("\n".join(lines[1:-1]), (ROOT / "scripts/load_test/stage_app.sh").read_text())
+        probe = "\n".join((lines[0], "printf 'payload-ok\\n'", lines[-1]))
+        result = subprocess.run(["bash", "-c", probe], text=True, capture_output=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "payload-ok\n")
+
     def test_start_requires_db_type_before_terraform(self):
         result, calls = self.run_script("start")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("--db-instance-type", result.stderr)
         self.assertFalse(any(call.startswith("terraform ") for call in calls))
 
+    def test_start_stage_ssm_payload_has_working_heredoc(self):
+        result, _ = self.run_script("start", "--skip-terraform-apply", "--switch-stage-to-loadtest")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_stage_ssm_payload_runs("loadtest")
+
     def test_stop_rejects_destroy_without_restore(self):
         result, calls = self.run_script("stop")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Destroy requires", result.stderr)
         self.assertFalse(any(call.startswith("terraform ") for call in calls))
+
+    def test_stop_stage_ssm_payload_has_working_heredoc(self):
+        result, _ = self.run_script("stop", "--restore-stage-dev", "--skip-terraform-destroy")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_stage_ssm_payload_runs("dev")
 
     def test_stop_keeps_db_when_stage_restore_fails(self):
         result, calls = self.run_script("stop", "--restore-stage-dev", status="Failed")
