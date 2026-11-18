@@ -103,6 +103,8 @@ tf_output() {
   terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
 }
 
+source scripts/load_test/terraform_db_type.sh
+
 runner_targets=(
   -target=aws_security_group.load_generator
   -target=aws_instance.load_generator
@@ -113,7 +115,8 @@ destroy_runner() {
   local cleanup_code=0
 
   if [[ "$DESTROY_RUNNER" == "true" ]]; then
-    terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE" "${runner_targets[@]}" || cleanup_code="$?"
+    terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE" \
+      -var="load_test_db_instance_type=$db_instance_type" "${runner_targets[@]}" || cleanup_code="$?"
   fi
 
   if [[ "$exit_code" -ne 0 ]]; then
@@ -298,7 +301,9 @@ sync_file() {
 }
 
 terraform -chdir="$TERRAFORM_DIR" init
-terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE" "${runner_targets[@]}"
+db_instance_type="$(load_test_db_instance_type_from_state)"
+terraform -chdir="$TERRAFORM_DIR" apply -auto-approve -var-file="$VAR_FILE" \
+  -var="load_test_db_instance_type=$db_instance_type" "${runner_targets[@]}"
 
 trap destroy_runner EXIT
 

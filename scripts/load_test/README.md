@@ -45,6 +45,7 @@ GitHub에서 **Actions > Load Test Start**를 수동 실행합니다.
 
 입력값:
 
+- `load_test_db_instance_type`: 필수 EC2 인스턴스 타입입니다. 기본값은 없으며 Start 실행 시마다 입력합니다. 선택한 값은 Terraform state에 기록되어 Run/Stop이 재사용합니다.
 - `switch_stage_to_loadtest`: `true` 또는 `false`
   - `true`이면 데이터 준비 후 stage 앱을 `dev,loadtest` profile로 재기동합니다.
 
@@ -59,7 +60,7 @@ Start workflow 동작:
 5. load-test MySQL EC2 user data가 prod MySQL 백업 S3 bucket의 최신 dump를 내려받아 복원합니다.
 6. `scripts/load_test/start.sh`가 Terraform output에서 필요한 값을 읽습니다.
 7. `scripts/load_test/start.sh`가 SSM으로 load-test MySQL EC2의 `cloud-init` 완료와 `/opt/solid-connection/load-test-db-ready` marker 생성을 확인합니다. 기본 대기 시간은 3600초입니다.
-8. `switch_stage_to_loadtest=true`이면 stage 앱을 `dev,loadtest` profile로 재기동합니다. username/password는 앱의 Parameter Store 연동이 loadtest 경로에서 읽습니다.
+8. `switch_stage_to_loadtest=true`이면 Nginx upstream으로 활성 blue/green 슬롯을 찾고 해당 슬롯의 앱만 같은 포트에서 `dev,loadtest` profile로 재기동합니다. 관리 포트의 health check 성공 후 stage MySQL 컨테이너를 중지합니다. 앱 전환에 실패하면 stage MySQL을 기동한 상태로 `dev` profile을 복구하고 Start를 실패 처리합니다. username/password는 앱의 Parameter Store 연동이 loadtest 경로에서 읽습니다.
 
 Start workflow는 load-generator EC2를 만들지 않습니다. 부하 생성용 EC2는 비용 누수를 막기 위해 Run workflow에서만 생성합니다.
 
@@ -157,12 +158,15 @@ GitHub에서 **Actions > Load Test Stop**을 수동 실행합니다.
   - `true`이면 stage 앱을 기존 dev compose 구성으로 되돌립니다.
 - `destroy_infra`: `true` 또는 `false`
   - `true`이면 load-test Terraform stack을 destroy합니다.
+- `load_test_db_instance_type`: 선택값입니다. Start의 Terraform apply가 DB EC2 생성 전에 실패해 state에 인스턴스 타입이 없을 때, 부분 생성된 리소스를 정리하려면 Start에서 선택했던 타입을 입력합니다. DB EC2가 state에 있으면 그 타입을 사용하며, 다른 값을 입력하면 Stop이 실패합니다.
 
 Stop workflow 동작:
 
 1. `scripts/load_test/stop.sh`가 `environment/load_test`에서 Terraform init을 실행합니다.
-2. `restore_stage_dev=true`이면 stage를 dev datasource 구성으로 복구합니다.
-3. `destroy_infra=true`이면 Terraform destroy로 load-test MySQL EC2, 데이터 EBS 볼륨, 보안 그룹과 남아 있는 load-generator EC2를 제거합니다.
+2. `restore_stage_dev=true`이면 stage MySQL 컨테이너를 다시 기동하고 준비 상태를 확인한 뒤 활성 슬롯의 앱을 같은 포트에서 `dev` profile로 재기동합니다. 활성 앱 컨테이너가 종료된 상태여도 프로젝트와 이미지가 확인되면 재생성합니다. MySQL 준비 전에 실패하면 정상 앱은 그대로 두고, dev 앱 재생성을 시도한 뒤 실패하면 진입 당시 `dev,loadtest`였던 경우에만 load-test profile 복구를 시도합니다. 롤백 후 MySQL을 중지한 경우 앱 health를 다시 확인합니다.
+3. `destroy_infra=true`이면 Terraform state를 읽고 DB 타입 충돌을 stage 전환 전에 검사합니다. dev 앱 health check 성공 후 Terraform destroy로 load-test MySQL EC2, 데이터 EBS 볼륨, 보안 그룹과 남아 있는 load-generator EC2를 제거합니다. DB EC2가 state에 없다는 것이 확인되면 입력한 인스턴스 타입으로 부분 생성 리소스를 정리합니다. state 조회에 실패하면 중단합니다. `restore_stage_dev=false`와 `destroy_infra=true`의 조합은 거부합니다.
+
+Start부터 Stop까지 stage 배포를 겹치지 않게 운영합니다. stage MySQL은 컨테이너를 중지했다가 재기동하며 데이터 볼륨과 컨테이너를 삭제하지 않습니다.
 
 ## 참고
 
@@ -173,7 +177,7 @@ Stop workflow 동작:
 - load-test MySQL EC2 보안 그룹은 prod/stage API EC2 보안 그룹에서 들어오는 MySQL 접근만 허용합니다.
 - Load-test DB defaults updated after PR review:
   - `load_test_db_ami_id`: `ami-0501a03cd31b53e82` (`solid-connection-db-mysql-8.4.8-arm64-ubuntu24.04-awscli-recovery-tools`).
-  - `load_test_db_instance_type`: `t4g.medium`, matching the arm64 DB AMI family.
+  - `load_test_db_instance_type`: Start workflow의 필수 입력값입니다. 선택 시 DB AMI의 CPU 아키텍처와 호환되는 타입을 사용합니다.
   - `load_test_db_subnet_id`: when omitted, the prod DB subnet is used so the existing S3 Gateway Endpoint route is available.
   - `load_test_db_associate_public_ip`: remains `false`; SSM access is provided through Terraform-managed SSM interface endpoints.
   - `load_test_db_instance_profile_name`: defaults to the pre-created dedicated `solid-connection-load-test-db` instance profile. Terraform does not create IAM resources.

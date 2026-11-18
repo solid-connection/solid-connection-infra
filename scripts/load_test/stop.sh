@@ -8,6 +8,7 @@ STAGE_APP_DIR="/home/ubuntu/solid-connection-dev"
 STAGE_COMPOSE_FILE="docker-compose.dev.yml"
 SSM_COMMAND_TIMEOUT_SECONDS="${SSM_COMMAND_TIMEOUT_SECONDS:-900}"
 SKIP_TERRAFORM_DESTROY="false"
+DB_INSTANCE_TYPE=""
 
 usage() {
   cat <<'EOF'
@@ -19,6 +20,7 @@ Options:
   --restore-stage-dev            Restart stage app through SSM with dev profile
   --stage-app-dir PATH           Default: /home/ubuntu/solid-connection-dev
   --stage-compose-file VALUE     Default: docker-compose.dev.yml
+  --db-instance-type VALUE       Required only if Start failed before the DB EC2 entered state
   --ssm-command-timeout-seconds  Default: 900
   --skip-terraform-destroy
   -h, --help
@@ -32,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --restore-stage-dev) RESTORE_STAGE_DEV="true"; shift ;;
     --stage-app-dir) STAGE_APP_DIR="$2"; shift 2 ;;
     --stage-compose-file) STAGE_COMPOSE_FILE="$2"; shift 2 ;;
+    --db-instance-type) DB_INSTANCE_TYPE="$2"; shift 2 ;;
     --ssm-command-timeout-seconds) SSM_COMMAND_TIMEOUT_SECONDS="$2"; shift 2 ;;
     --skip-terraform-destroy) SKIP_TERRAFORM_DESTROY="true"; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -50,9 +53,10 @@ require_command terraform
 require_command aws
 require_command jq
 
-tf_output() {
-  terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
-}
+if [[ "$RESTORE_STAGE_DEV" != "true" && "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
+  echo "Destroy requires --restore-stage-dev so stage cannot lose its DB" >&2
+  exit 1
+fi
 
 send_ssm_command() {
   local instance_id="$1"
@@ -105,23 +109,57 @@ send_ssm_command() {
 
 terraform -chdir="$TERRAFORM_DIR" init
 
+if [[ "$RESTORE_STAGE_DEV" == "true" || "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
+  if ! state_json="$(terraform -chdir="$TERRAFORM_DIR" show -json)" ||
+      ! jq -e '.values | type == "object"' <<< "$state_json" >/dev/null; then
+    echo "Cannot read load-test Terraform state; refusing to change stage or destroy" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
+  db_resource_count="$(jq -r '[.values.root_module.resources[]?
+    | select(.address == "aws_instance.load_test_db")] | length' <<< "$state_json")"
+  if [[ "$db_resource_count" == "1" ]]; then
+    db_instance_type="$(jq -r '[.values.root_module.resources[]?
+      | select(.address == "aws_instance.load_test_db") | .values.instance_type][0] // empty' <<< "$state_json")"
+    if [[ -z "$db_instance_type" ]]; then
+      echo "DB EC2 exists in state without an instance type; refusing to destroy" >&2
+      exit 1
+    fi
+  elif [[ "$db_resource_count" == "0" && -n "$DB_INSTANCE_TYPE" ]]; then
+    db_instance_type="$DB_INSTANCE_TYPE"
+  elif [[ "$db_resource_count" == "0" ]]; then
+    echo "DB EC2 is absent from state; pass --db-instance-type to destroy the partial stack" >&2
+    exit 1
+  else
+    echo "Unexpected DB EC2 resources in Terraform state; refusing to destroy" >&2
+    exit 1
+  fi
+  if [[ -n "$DB_INSTANCE_TYPE" && "$DB_INSTANCE_TYPE" != "$db_instance_type" ]]; then
+    echo "Provided DB instance type differs from Terraform state: $db_instance_type" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$RESTORE_STAGE_DEV" == "true" ]]; then
-  stage_instance_id="$(tf_output stage_api_instance_id)"
+  stage_instance_id="$(jq -r '
+    [.values.root_module.resources[]?
+      | select(.address == "data.aws_instance.stage_api") | .values.id][0]
+      // .values.outputs.stage_api_instance_id.value // empty
+  ' <<< "$state_json")"
+  if [[ -z "$stage_instance_id" ]]; then
+    echo "Cannot identify the stage API instance from Terraform state; refusing to destroy" >&2
+    exit 1
+  fi
 
   stage_commands_json="$(jq -cn \
     --arg app_dir "$STAGE_APP_DIR" \
     --arg compose_file "$STAGE_COMPOSE_FILE" \
+    --rawfile script scripts/load_test/stage_app.sh \
     '{
       commands: [
-        "set -euo pipefail",
-        "cd \($app_dir)",
-        "CURRENT_IMAGE=$(docker inspect -f '\''{{.Config.Image}}'\'' solid-connection-dev 2>/dev/null || true)",
-        "if [ -z \"$CURRENT_IMAGE\" ]; then echo \"solid-connection-dev container is not running; cannot infer image tag\" >&2; exit 1; fi",
-        "OWNER_LOWERCASE=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#^ghcr.io/([^/]+)/.*#\\1#'\'')",
-        "IMAGE_TAG=$(echo \"$CURRENT_IMAGE\" | sed -E '\''s#.*:([^:]+)$#\\1#'\'')",
-        "rm -f docker-compose.loadtest.override.yml",
-        "docker compose -f \($compose_file) down || true",
-        "OWNER_LOWERCASE=\"$OWNER_LOWERCASE\" IMAGE_TAG=\"$IMAGE_TAG\" docker compose -f \($compose_file) up -d"
+        "STAGE_MODE=dev STAGE_APP_DIR=\($app_dir | @sh) STAGE_COMPOSE_FILE=\($compose_file | @sh) bash -s <<\\STAGE_APP_SCRIPT\n\($script)\nSTAGE_APP_SCRIPT"
       ]
     }')"
 
@@ -129,7 +167,8 @@ if [[ "$RESTORE_STAGE_DEV" == "true" ]]; then
 fi
 
 if [[ "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
-  terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE"
+  terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE" \
+    -var="load_test_db_instance_type=$db_instance_type"
 fi
 
 echo "Load test environment has been stopped."

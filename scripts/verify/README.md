@@ -42,6 +42,14 @@ scripts/verify/verify.sh all --expect .verify/expect.txt
 | `git submodule update --init --recursive` (tfvars)               | `SKIPPED`                                                    |
 | prod: DB EC2 로의 SSM 포트 포워딩 권한                           | `SKIPPED`                                                    |
 
+`load_test`는 DB EC2 인스턴스 타입의 Terraform 기본값이 없습니다. 로컬 L2를 실행할 때 DB EC2가 이미 state에 있으면 그 인스턴스 타입을 지정하세요. 아래 `t4g.medium`은 DB EC2가 없는 경우의 plan 검증 예시값이며 Start 실행의 기본값이 아닙니다. PR CI도 DB EC2가 있으면 state의 타입을 사용합니다.
+
+```bash
+AWS_PROFILE=solid-connection-readonly \
+TF_VAR_load_test_db_instance_type=t4g.medium \
+scripts/verify/verify.sh l2 --expect .verify/expect.txt
+```
+
 plan 전문은 `.verify/l2/<env>.plan.txt` 에 저장됩니다. (gitignore 대상)
 
 ### 의도 파일 (`--expect`)

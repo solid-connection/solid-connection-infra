@@ -674,12 +674,42 @@ jobs:
       - name: Terraform Init
         working-directory: environment/load_test
         run: terraform init
+      - name: Select DB Type for Plan
+        id: db_type
+        working-directory: environment/load_test
+        run: |
+          set -euo pipefail
+          state_json="$(terraform show -json)"
+          if ! jq -e '.format_version | type == "string"' <<< "$state_json" >/dev/null; then
+            echo "Terraform state JSON could not be parsed" >&2
+            exit 1
+          fi
+          db_count="$(jq -r '[.values.root_module.resources[]?
+            | select(.address == "aws_instance.load_test_db")] | length' <<< "$state_json")"
+          if [[ "$db_count" == "1" ]]; then
+            db_type="$(jq -r '[.values.root_module.resources[]?
+              | select(.address == "aws_instance.load_test_db") | .values.instance_type][0] // empty' <<< "$state_json")"
+            if [[ -z "$db_type" ]]; then
+              echo "DB EC2 exists in state without an instance type" >&2
+              exit 1
+            fi
+          elif [[ "$db_count" == "0" ]]; then
+            # Plan-only fixture when Start has not created the DB EC2.
+            db_type="t4g.medium"
+          else
+            echo "Unexpected DB EC2 resources in Terraform state" >&2
+            exit 1
+          fi
+          echo "value=$db_type" >> "$GITHUB_OUTPUT"
       - name: Terraform Plan
         id: plan
         working-directory: environment/load_test
+        env:
+          LOAD_TEST_DB_INSTANCE_TYPE: ${{ steps.db_type.outputs.value }}
         run: |
           terraform plan -no-color -out=tfplan \
             -var-file="../../config/secrets/load_test.tfvars" \
+            -var="load_test_db_instance_type=$LOAD_TEST_DB_INSTANCE_TYPE" \
             2>&1 | tee plan_output.txt
           echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
       - name: Check Plan (L2)
