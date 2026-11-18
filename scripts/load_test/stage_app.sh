@@ -125,9 +125,12 @@ wait_for_mysql() {
   return 1
 }
 
+dev_recreate_started=false
 restore_dev() {
-  docker compose -p "$mysql_project" -f "$STAGE_COMPOSE_FILE" start mysql &&
-    wait_for_mysql && recreate_app dev && wait_for_app
+  docker compose -p "$mysql_project" -f "$STAGE_COMPOSE_FILE" start mysql || return 1
+  wait_for_mysql || return 1
+  dev_recreate_started=true
+  recreate_app dev && wait_for_app
 }
 
 if [[ "$STAGE_MODE" == "loadtest" ]]; then
@@ -141,9 +144,11 @@ if [[ "$STAGE_MODE" == "loadtest" ]]; then
 else
   if ! restore_dev; then
     echo "Stage dev restore failed; retaining the load-test DB EC2" >&2
-    if [[ "$initial_profile" == "dev,loadtest" ]]; then
+    if [[ "$initial_profile" == "dev,loadtest" &&
+          ( "$dev_recreate_started" == "true" || "$app_running" != "true" ) ]]; then
       recreate_app loadtest && wait_for_app &&
-        docker compose -p "$mysql_project" -f "$STAGE_COMPOSE_FILE" stop mysql ||
+        docker compose -p "$mysql_project" -f "$STAGE_COMPOSE_FILE" stop mysql &&
+        wait_for_app ||
         echo "Stage load-test rollback also failed" >&2
     fi
     exit 1

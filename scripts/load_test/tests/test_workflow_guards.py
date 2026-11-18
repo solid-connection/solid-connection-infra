@@ -26,12 +26,13 @@ class WorkflowGuardTests(unittest.TestCase):
 printf 'terraform %s\n' "$*" >> "$MOCK_LOG"
 case "$*" in
   *"output -raw stage_api_instance_id"*)
-    if [[ "${MOCK_PARTIAL_STATE:-false}" == true ]]; then exit 1; fi
+    if [[ "${MOCK_PARTIAL_STATE:-false}" == true ]]; then echo 'No outputs found'; exit 0; fi
     echo i-stage ;;
   *"output -raw load_test_db_instance_type"*)
-    if [[ "${MOCK_OLD_STATE:-false}" == true || "${MOCK_PARTIAL_STATE:-false}" == true ]]; then exit 1; fi
+    if [[ "${MOCK_OLD_STATE:-false}" == true || "${MOCK_PARTIAL_STATE:-false}" == true ]]; then echo 'No outputs found'; exit 0; fi
     echo t4g.large ;;
   *"show -json"*)
+    if [[ "${MOCK_STATE_ERROR:-false}" == true ]]; then echo 'state backend unavailable' >&2; exit 1; fi
     if [[ "${MOCK_PARTIAL_STATE:-false}" == true ]]; then
       echo '{"values":{"root_module":{"resources":[{"address":"data.aws_instance.stage_api","values":{"id":"i-stage"}}]}}}'
     else
@@ -66,7 +67,10 @@ esac
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_script(self, name, *args, status="Success", old_state=False, partial_state=False):
+    def run_script(
+        self, name, *args, status="Success", old_state=False,
+        partial_state=False, state_error=False
+    ):
         env = os.environ.copy()
         env.update(
             PATH=f"{self.bin}:{env['PATH']}",
@@ -75,6 +79,7 @@ esac
             MOCK_SSM_STATUS=status,
             MOCK_OLD_STATE="true" if old_state else "false",
             MOCK_PARTIAL_STATE="true" if partial_state else "false",
+            MOCK_STATE_ERROR="true" if state_error else "false",
         )
         result = subprocess.run(
             ["bash", f"scripts/load_test/{name}.sh", *args],
@@ -97,6 +102,20 @@ esac
         result = subprocess.run(["bash", "-c", probe], text=True, capture_output=True, check=False)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "payload-ok\n")
+
+    def run_db_type_reader(self, *, state_error=False):
+        env = os.environ.copy()
+        env.update(
+            PATH=f"{self.bin}:{env['PATH']}",
+            MOCK_LOG=str(self.log),
+            MOCK_STATE_ERROR="true" if state_error else "false",
+        )
+        return subprocess.run(
+            ["bash", "-c", "TERRAFORM_DIR=environment/load_test; "
+             "source scripts/load_test/terraform_db_type.sh; "
+             "load_test_db_instance_type_from_state"],
+            cwd=ROOT, env=env, text=True, capture_output=True, check=False,
+        )
 
     def test_start_requires_db_type_before_terraform(self):
         result, calls = self.run_script("start")
@@ -137,6 +156,7 @@ esac
         result, calls = self.run_script("stop", "--restore-stage-dev", old_state=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("show -json" in call for call in calls))
+        self.assertFalse(any("output -raw load_test_db_instance_type" in call for call in calls))
         self.assertTrue(any("-var=load_test_db_instance_type=t4g.large" in call for call in calls))
 
     def test_stop_cleans_partial_state_with_explicit_db_type(self):
@@ -146,6 +166,7 @@ esac
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("ssm send-command --instance-ids i-stage " in call for call in calls))
+        self.assertFalse(any("output -raw " in call for call in calls))
         stage_status = next(i for i, call in enumerate(calls) if "--query Status" in call)
         destroy = next(i for i, call in enumerate(calls) if " destroy " in call)
         self.assertLess(stage_status, destroy)
@@ -161,7 +182,29 @@ esac
         result, calls = self.run_script("stop", "--restore-stage-dev", "--db-instance-type", "t4g.medium")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("differs from Terraform state", result.stderr)
+        self.assertFalse(any("ssm send-command" in call for call in calls))
         self.assertFalse(any(" destroy " in call for call in calls))
+
+    def test_stop_rejects_state_read_failure_before_stage_restore(self):
+        result, calls = self.run_script(
+            "stop", "--restore-stage-dev", "--db-instance-type", "t4g.medium",
+            state_error=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot read load-test Terraform state", result.stderr)
+        self.assertFalse(any("ssm send-command" in call for call in calls))
+        self.assertFalse(any(" destroy " in call for call in calls))
+
+    def test_db_type_reader_uses_resource_value(self):
+        result = self.run_db_type_reader()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "t4g.large")
+        self.assertFalse(any("output -raw" in call for call in self.log.read_text().splitlines()))
+
+    def test_db_type_reader_rejects_state_read_error(self):
+        result = self.run_db_type_reader(state_error=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Cannot read Terraform state", result.stderr)
 
 
 if __name__ == "__main__":

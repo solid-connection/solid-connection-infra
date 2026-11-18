@@ -163,8 +163,8 @@ GitHub에서 **Actions > Load Test Stop**을 수동 실행합니다.
 Stop workflow 동작:
 
 1. `scripts/load_test/stop.sh`가 `environment/load_test`에서 Terraform init을 실행합니다.
-2. `restore_stage_dev=true`이면 stage MySQL 컨테이너를 다시 기동하고 준비 상태를 확인한 뒤 활성 슬롯의 앱을 같은 포트에서 `dev` profile로 재기동합니다. 활성 앱 컨테이너가 종료된 상태여도 프로젝트와 이미지가 확인되면 재생성합니다. 관리 포트의 health check가 실패하면 진입 당시 앱이 `dev,loadtest`였던 경우에만 load-test profile 복구를 시도하고 작업을 실패 처리합니다.
-3. `destroy_infra=true`이면 dev 앱 health check 성공 후 Terraform destroy로 load-test MySQL EC2, 데이터 EBS 볼륨, 보안 그룹과 남아 있는 load-generator EC2를 제거합니다. DB EC2가 state에 없다면 입력한 인스턴스 타입으로 부분 생성 리소스를 정리합니다. `restore_stage_dev=false`와 `destroy_infra=true`의 조합은 거부합니다.
+2. `restore_stage_dev=true`이면 stage MySQL 컨테이너를 다시 기동하고 준비 상태를 확인한 뒤 활성 슬롯의 앱을 같은 포트에서 `dev` profile로 재기동합니다. 활성 앱 컨테이너가 종료된 상태여도 프로젝트와 이미지가 확인되면 재생성합니다. MySQL 준비 전에 실패하면 정상 앱은 그대로 두고, dev 앱 재생성을 시도한 뒤 실패하면 진입 당시 `dev,loadtest`였던 경우에만 load-test profile 복구를 시도합니다. 롤백 후 MySQL을 중지한 경우 앱 health를 다시 확인합니다.
+3. `destroy_infra=true`이면 Terraform state를 읽고 DB 타입 충돌을 stage 전환 전에 검사합니다. dev 앱 health check 성공 후 Terraform destroy로 load-test MySQL EC2, 데이터 EBS 볼륨, 보안 그룹과 남아 있는 load-generator EC2를 제거합니다. DB EC2가 state에 없다는 것이 확인되면 입력한 인스턴스 타입으로 부분 생성 리소스를 정리합니다. state 조회에 실패하면 중단합니다. `restore_stage_dev=false`와 `destroy_infra=true`의 조합은 거부합니다.
 
 Start부터 Stop까지 stage 배포를 겹치지 않게 운영합니다. stage MySQL은 컨테이너를 중지했다가 재기동하며 데이터 볼륨과 컨테이너를 삭제하지 않습니다.
 

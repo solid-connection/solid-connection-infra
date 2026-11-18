@@ -182,10 +182,21 @@ fi
         self.assertTrue(any(".docker-compose.loadtest." in call for call in calls))
         self.assertTrue(any("stop mysql" in call for call in calls))
 
+    def test_stop_rollback_checks_health_after_stopping_mysql(self):
+        result, calls = self.run_stage(
+            "dev", 8080, fail_mode="dev", fail_after_mysql_stop=True
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Stage load-test rollback also failed", result.stderr)
+        mysql_stop = max(i for i, call in enumerate(calls) if "stop mysql" in call)
+        self.assertTrue(any("curl " in call for call in calls[mysql_stop + 1:]))
+
     def test_mysql_not_ready_prevents_dev_switch(self):
         result, calls = self.run_stage("dev", 8080, mysql_fail=True)
         self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(any("docker compose" in call and "up -d --no-deps --force-recreate solid-connection-dev" in call and ".docker-compose.loadtest." not in call for call in calls))
+        self.assertEqual(self.mode.read_text().strip(), "loadtest")
+        self.assertFalse(any("up -d --no-deps --force-recreate solid-connection-dev" in call for call in calls))
+        self.assertFalse(any("stop mysql" in call for call in calls))
 
 
 if __name__ == "__main__":

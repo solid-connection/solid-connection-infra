@@ -58,29 +58,6 @@ if [[ "$RESTORE_STAGE_DEV" != "true" && "$SKIP_TERRAFORM_DESTROY" != "true" ]]; 
   exit 1
 fi
 
-source scripts/load_test/terraform_db_type.sh
-
-tf_output() {
-  terraform -chdir="$TERRAFORM_DIR" output -raw "$1"
-}
-
-stage_api_instance_id_from_state() {
-  local value
-  value="$(tf_output stage_api_instance_id 2>/dev/null || true)"
-  if [[ -z "$value" ]]; then
-    value="$(terraform -chdir="$TERRAFORM_DIR" show -json | jq -r '
-      first(.values.root_module.resources[]?
-        | select(.address == "data.aws_instance.stage_api")
-        | .values.id) // empty
-    ')"
-  fi
-  if [[ -z "$value" ]]; then
-    echo "Cannot identify the stage API instance from Terraform state; refusing to destroy" >&2
-    return 1
-  fi
-  printf '%s\n' "$value"
-}
-
 send_ssm_command() {
   local instance_id="$1"
   local comment="$2"
@@ -132,8 +109,49 @@ send_ssm_command() {
 
 terraform -chdir="$TERRAFORM_DIR" init
 
+if [[ "$RESTORE_STAGE_DEV" == "true" || "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
+  if ! state_json="$(terraform -chdir="$TERRAFORM_DIR" show -json)" ||
+      ! jq -e '.values | type == "object"' <<< "$state_json" >/dev/null; then
+    echo "Cannot read load-test Terraform state; refusing to change stage or destroy" >&2
+    exit 1
+  fi
+fi
+
+if [[ "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
+  db_resource_count="$(jq -r '[.values.root_module.resources[]?
+    | select(.address == "aws_instance.load_test_db")] | length' <<< "$state_json")"
+  if [[ "$db_resource_count" == "1" ]]; then
+    db_instance_type="$(jq -r '[.values.root_module.resources[]?
+      | select(.address == "aws_instance.load_test_db") | .values.instance_type][0] // empty' <<< "$state_json")"
+    if [[ -z "$db_instance_type" ]]; then
+      echo "DB EC2 exists in state without an instance type; refusing to destroy" >&2
+      exit 1
+    fi
+  elif [[ "$db_resource_count" == "0" && -n "$DB_INSTANCE_TYPE" ]]; then
+    db_instance_type="$DB_INSTANCE_TYPE"
+  elif [[ "$db_resource_count" == "0" ]]; then
+    echo "DB EC2 is absent from state; pass --db-instance-type to destroy the partial stack" >&2
+    exit 1
+  else
+    echo "Unexpected DB EC2 resources in Terraform state; refusing to destroy" >&2
+    exit 1
+  fi
+  if [[ -n "$DB_INSTANCE_TYPE" && "$DB_INSTANCE_TYPE" != "$db_instance_type" ]]; then
+    echo "Provided DB instance type differs from Terraform state: $db_instance_type" >&2
+    exit 1
+  fi
+fi
+
 if [[ "$RESTORE_STAGE_DEV" == "true" ]]; then
-  stage_instance_id="$(stage_api_instance_id_from_state)"
+  stage_instance_id="$(jq -r '
+    [.values.root_module.resources[]?
+      | select(.address == "data.aws_instance.stage_api") | .values.id][0]
+      // .values.outputs.stage_api_instance_id.value // empty
+  ' <<< "$state_json")"
+  if [[ -z "$stage_instance_id" ]]; then
+    echo "Cannot identify the stage API instance from Terraform state; refusing to destroy" >&2
+    exit 1
+  fi
 
   stage_commands_json="$(jq -cn \
     --arg app_dir "$STAGE_APP_DIR" \
@@ -149,17 +167,6 @@ if [[ "$RESTORE_STAGE_DEV" == "true" ]]; then
 fi
 
 if [[ "$SKIP_TERRAFORM_DESTROY" != "true" ]]; then
-  db_instance_type="$(load_test_db_instance_type_from_state 2>/dev/null || true)"
-  if [[ -z "$db_instance_type" ]]; then
-    if [[ -z "$DB_INSTANCE_TYPE" ]]; then
-      echo "DB EC2 is absent from state; pass --db-instance-type to destroy the partial stack" >&2
-      exit 1
-    fi
-    db_instance_type="$DB_INSTANCE_TYPE"
-  elif [[ -n "$DB_INSTANCE_TYPE" && "$DB_INSTANCE_TYPE" != "$db_instance_type" ]]; then
-    echo "Provided DB instance type differs from Terraform state: $db_instance_type" >&2
-    exit 1
-  fi
   terraform -chdir="$TERRAFORM_DIR" destroy -auto-approve -var-file="$VAR_FILE" \
     -var="load_test_db_instance_type=$db_instance_type"
 fi
