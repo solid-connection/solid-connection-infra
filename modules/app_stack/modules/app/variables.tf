@@ -54,3 +54,7 @@ variable "redis_exporter_version" {
 variable "alloy_version" {
   type = string
 }
+
+variable "node_exporter_enabled" {
+  type = bool
+}

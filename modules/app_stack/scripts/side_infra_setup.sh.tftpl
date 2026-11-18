@@ -58,6 +58,25 @@ services:
     network_mode: "host"
     restart: always
 
+%{ if node_exporter_enabled ~}
+  node-exporter:
+    image: prom/node-exporter:v1.9.1
+    container_name: node-exporter
+    network_mode: "host"
+    pid: "host"
+    restart: always
+    read_only: true
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/host/root:ro,rslave
+    command:
+      - --path.procfs=/host/proc
+      - --path.sysfs=/host/sys
+      - --path.rootfs=/host/root
+      - --web.listen-address=${api_private_ip}:9100
+
+%{ endif ~}
 EOF
 
 # 4. Start containers
@@ -66,7 +85,7 @@ cd "$WORK_DIR"
 # Cleanup potential conflicts where ports might be locked by other Docker Compose instances.
 # 'rm -f' is executed first to ensure cleanup of any lingering network resources attached to existing containers.
 echo "Cleanup: Force removing leftover containers..."
-docker rm -f redis redis-exporter alloy || true
+docker rm -f redis redis-exporter alloy%{ if node_exporter_enabled } node-exporter%{ endif } || true
 
 echo "Stopping previous containers if running..."
 docker compose -f docker-compose.side-infra.yml down || true

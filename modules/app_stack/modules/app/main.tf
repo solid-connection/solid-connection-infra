@@ -72,12 +72,14 @@ locals {
   })
 
   side_infra_script_b64 = base64encode(templatefile("${path.module}/../../scripts/side_infra_setup.sh.tftpl", {
+    api_private_ip         = aws_instance.api_server.private_ip
     work_dir               = var.work_dir
     alloy_env_name         = var.alloy_env_name
     alloy_config_content   = local.alloy_config
     redis_version          = var.redis_version
     redis_exporter_version = var.redis_exporter_version
     alloy_version          = var.alloy_version
+    node_exporter_enabled  = var.node_exporter_enabled
   }))
 
   nginx_install_ssm_params = jsonencode({
@@ -241,6 +243,7 @@ resource "null_resource" "update_side_infra" {
 
   triggers = {
     script_hash = sha256(templatefile("${path.module}/../../scripts/side_infra_setup.sh.tftpl", {
+      api_private_ip = aws_instance.api_server.private_ip
       work_dir       = var.work_dir
       alloy_env_name = var.alloy_env_name
       alloy_config_content = templatefile("${path.module}/../../../../config/side-infra/config.alloy.tftpl", {
@@ -249,6 +252,7 @@ resource "null_resource" "update_side_infra" {
       redis_version          = var.redis_version
       redis_exporter_version = var.redis_exporter_version
       alloy_version          = var.alloy_version
+      node_exporter_enabled  = var.node_exporter_enabled
     }))
   }
 
