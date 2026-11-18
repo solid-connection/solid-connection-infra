@@ -214,6 +214,12 @@ variable "node_exporter_enabled" {
   default     = false
 }
 
+variable "node_exporter_managed" {
+  description = "Remove an existing Node Exporter container when this environment disables it"
+  type        = bool
+  default     = false
+}
+
 variable "internal_alarm_api_ports" {
   description = "DB EC2가 백업 실패 알림을 보내는 API 서버의 Blue/Green app 포트"
   type        = list(number)

@@ -58,3 +58,7 @@ variable "alloy_version" {
 variable "node_exporter_enabled" {
   type = bool
 }
+
+variable "node_exporter_managed" {
+  type = bool
+}

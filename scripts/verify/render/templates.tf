@@ -43,6 +43,7 @@ locals {
       redis_exporter_version = "v1.62.0"
       alloy_version          = "v1.4.0"
       node_exporter_enabled  = true
+      node_exporter_managed  = true
     })
 
     # modules/monitoring_stack/ec2.tf
