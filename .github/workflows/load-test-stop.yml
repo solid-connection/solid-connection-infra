@@ -13,6 +13,10 @@ on:
         required: true
         default: true
         type: boolean
+      load_test_db_instance_type:
+        description: "DB EC2 type selected at Start; needed only if DB EC2 was never created"
+        required: false
+        type: string
 
 permissions:
   id-token: write
@@ -51,6 +55,8 @@ jobs:
           sudo apt-get install -y jq
 
       - name: Stop load test environment
+        env:
+          DB_INSTANCE_TYPE: ${{ inputs.load_test_db_instance_type }}
         run: |
           args=()
 
@@ -60,6 +66,10 @@ jobs:
 
           if [ "${{ inputs.destroy_infra }}" != "true" ]; then
             args+=(--skip-terraform-destroy)
+          fi
+
+          if [ -n "$DB_INSTANCE_TYPE" ]; then
+            args+=(--db-instance-type "$DB_INSTANCE_TYPE")
           fi
 
           bash scripts/load_test/stop.sh "${args[@]}"

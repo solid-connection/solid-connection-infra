@@ -43,13 +43,27 @@ fi
 
 container="solid-connection-dev-$slot"
 project="$container"
-if [[ "$(docker inspect -f '{{.State.Running}}' "$container")" != "true" ||
-      "$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$container")" != "$project" ]]; then
-  echo "Active slot container is unavailable or has the wrong Compose project: $container" >&2
+if ! app_running="$(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null)"; then
+  echo "Active slot container is unavailable: $container" >&2
+  exit 1
+fi
+if [[ "$app_running" != "true" && ( "$STAGE_MODE" != "dev" || "$app_running" != "false" ) ]]; then
+  echo "Active slot container is unavailable: $container" >&2
+  exit 1
+fi
+if [[ "$(docker inspect -f '{{ index .Config.Labels "com.docker.compose.project" }}' "$container")" != "$project" ]]; then
+  echo "Active slot container has the wrong Compose project: $container" >&2
   exit 1
 fi
 
 current_image="$(docker inspect -f '{{.Config.Image}}' "$container")"
+container_env="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container")"
+initial_profile=""
+while IFS= read -r env_entry; do
+  if [[ "$env_entry" == SPRING_PROFILES_ACTIVE=* ]]; then
+    initial_profile="${env_entry#SPRING_PROFILES_ACTIVE=}"
+  fi
+done <<< "$container_env"
 image_pattern='^ghcr\.io/([^/]+)/solid-connection-dev:([^:]+)$'
 if [[ ! "$current_image" =~ $image_pattern ]]; then
   echo "Cannot infer the active app image from $current_image" >&2
@@ -127,9 +141,11 @@ if [[ "$STAGE_MODE" == "loadtest" ]]; then
 else
   if ! restore_dev; then
     echo "Stage dev restore failed; retaining the load-test DB EC2" >&2
-    recreate_app loadtest && wait_for_app &&
-      docker compose -p "$mysql_project" -f "$STAGE_COMPOSE_FILE" stop mysql ||
-      echo "Stage load-test rollback also failed" >&2
+    if [[ "$initial_profile" == "dev,loadtest" ]]; then
+      recreate_app loadtest && wait_for_app &&
+        docker compose -p "$mysql_project" -f "$STAGE_COMPOSE_FILE" stop mysql ||
+        echo "Stage load-test rollback also failed" >&2
+    fi
     exit 1
   fi
 fi

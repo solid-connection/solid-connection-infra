@@ -36,9 +36,10 @@ if [[ "$1" == "inspect" ]]; then
       esac ;;
     solid-connection-dev-blue|solid-connection-dev-green)
       case "$3" in
-        *State.Running*) echo true ;;
+        *State.Running*) echo "$MOCK_APP_RUNNING" ;;
         *compose.project*) echo "$4" ;;
         *Config.Image*) echo ghcr.io/solid-connection/solid-connection-dev:tag-123 ;;
+        *Config.Env*) echo "SPRING_PROFILES_ACTIVE=$MOCK_INITIAL_PROFILE" ;;
       esac ;;
   esac
 elif [[ "$1" == "compose" ]]; then
@@ -78,11 +79,15 @@ fi
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_stage(self, mode, port, *, fail_mode="none", mysql_fail=False, fail_after_mysql_stop=False):
+    def run_stage(
+        self, mode, port, *, fail_mode="none", mysql_fail=False,
+        fail_after_mysql_stop=False, initial_profile=None, app_running=True
+    ):
         self.upstream.write_text(
             f"upstream app_backend {{\n    server 127.0.0.1:{port};\n}}\n"
         )
-        self.mode.write_text("dev" if mode == "loadtest" else "loadtest")
+        initial_profile = initial_profile or ("dev" if mode == "loadtest" else "dev,loadtest")
+        self.mode.write_text("loadtest" if initial_profile == "dev,loadtest" else "dev")
         env = os.environ.copy()
         env.update(
             PATH=f"{self.bin}:{env['PATH']}",
@@ -99,6 +104,8 @@ fi
             MOCK_FAIL_MODE=fail_mode,
             MOCK_MYSQL_FAIL="true" if mysql_fail else "false",
             MOCK_FAIL_AFTER_MYSQL_STOP="true" if fail_after_mysql_stop else "false",
+            MOCK_INITIAL_PROFILE=initial_profile,
+            MOCK_APP_RUNNING="true" if app_running else "false",
         )
         result = subprocess.run(
             ["bash", str(SCRIPT)], env=env, text=True, capture_output=True, check=False
@@ -149,6 +156,24 @@ fi
         self.assertLess(mysql_start, mysql_ping)
         self.assertLess(mysql_ping, dev_up)
         self.assertEqual(self.mode.read_text().strip(), "dev")
+
+    def test_stop_recreates_exited_active_app(self):
+        result, calls = self.run_stage("dev", 8080, app_running=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("up -d --no-deps --force-recreate solid-connection-dev" in call for call in calls))
+        self.assertEqual(self.mode.read_text().strip(), "dev")
+
+    def test_start_rejects_exited_active_app(self):
+        result, calls = self.run_stage("loadtest", 8080, app_running=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any("docker compose" in call for call in calls))
+
+    def test_stop_failure_preserves_initial_dev_profile(self):
+        result, calls = self.run_stage("dev", 8080, mysql_fail=True, initial_profile="dev")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.mode.read_text().strip(), "dev")
+        self.assertFalse(any(".docker-compose.loadtest." in call for call in calls))
+        self.assertFalse(any("stop mysql" in call for call in calls))
 
     def test_failed_dev_health_returns_failure(self):
         result, calls = self.run_stage("dev", 8080, fail_mode="dev")

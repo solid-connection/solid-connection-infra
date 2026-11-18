@@ -25,11 +25,18 @@ class WorkflowGuardTests(unittest.TestCase):
             r'''#!/usr/bin/env bash
 printf 'terraform %s\n' "$*" >> "$MOCK_LOG"
 case "$*" in
-  *"output -raw stage_api_instance_id"*) echo i-stage ;;
+  *"output -raw stage_api_instance_id"*)
+    if [[ "${MOCK_PARTIAL_STATE:-false}" == true ]]; then exit 1; fi
+    echo i-stage ;;
   *"output -raw load_test_db_instance_type"*)
-    if [[ "${MOCK_OLD_STATE:-false}" == true ]]; then exit 1; fi
+    if [[ "${MOCK_OLD_STATE:-false}" == true || "${MOCK_PARTIAL_STATE:-false}" == true ]]; then exit 1; fi
     echo t4g.large ;;
-  *"show -json"*) echo '{"values":{"root_module":{"resources":[{"address":"aws_instance.load_test_db","values":{"instance_type":"t4g.large"}}]}}}' ;;
+  *"show -json"*)
+    if [[ "${MOCK_PARTIAL_STATE:-false}" == true ]]; then
+      echo '{"values":{"root_module":{"resources":[{"address":"data.aws_instance.stage_api","values":{"id":"i-stage"}}]}}}'
+    else
+      echo '{"values":{"root_module":{"resources":[{"address":"aws_instance.load_test_db","values":{"instance_type":"t4g.large"}},{"address":"data.aws_instance.stage_api","values":{"id":"i-stage"}}]}}}'
+    fi ;;
 esac
 ''',
         )
@@ -59,7 +66,7 @@ esac
         path.write_text(content)
         path.chmod(0o755)
 
-    def run_script(self, name, *args, status="Success", old_state=False):
+    def run_script(self, name, *args, status="Success", old_state=False, partial_state=False):
         env = os.environ.copy()
         env.update(
             PATH=f"{self.bin}:{env['PATH']}",
@@ -67,6 +74,7 @@ esac
             MOCK_SSM_PARAMETERS=str(self.ssm_parameters),
             MOCK_SSM_STATUS=status,
             MOCK_OLD_STATE="true" if old_state else "false",
+            MOCK_PARTIAL_STATE="true" if partial_state else "false",
         )
         result = subprocess.run(
             ["bash", f"scripts/load_test/{name}.sh", *args],
@@ -130,6 +138,30 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertTrue(any("show -json" in call for call in calls))
         self.assertTrue(any("-var=load_test_db_instance_type=t4g.large" in call for call in calls))
+
+    def test_stop_cleans_partial_state_with_explicit_db_type(self):
+        result, calls = self.run_script(
+            "stop", "--restore-stage-dev", "--db-instance-type", "t4g.medium",
+            partial_state=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(any("ssm send-command --instance-ids i-stage " in call for call in calls))
+        stage_status = next(i for i, call in enumerate(calls) if "--query Status" in call)
+        destroy = next(i for i, call in enumerate(calls) if " destroy " in call)
+        self.assertLess(stage_status, destroy)
+        self.assertIn("-var=load_test_db_instance_type=t4g.medium", calls[destroy])
+
+    def test_stop_keeps_partial_state_without_explicit_db_type(self):
+        result, calls = self.run_script("stop", "--restore-stage-dev", partial_state=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("--db-instance-type", result.stderr)
+        self.assertFalse(any(" destroy " in call for call in calls))
+
+    def test_stop_rejects_db_type_conflicting_with_state(self):
+        result, calls = self.run_script("stop", "--restore-stage-dev", "--db-instance-type", "t4g.medium")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("differs from Terraform state", result.stderr)
+        self.assertFalse(any(" destroy " in call for call in calls))
 
 
 if __name__ == "__main__":
