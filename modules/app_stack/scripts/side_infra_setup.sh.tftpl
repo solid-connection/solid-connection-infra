@@ -94,6 +94,8 @@ docker rm -f node-exporter || true
 # Compose recreates services only when their configuration changed. Adding or
 # removing Node Exporter leaves the existing Redis container and its data intact.
 docker compose -f docker-compose.side-infra.yml up -d
+# Alloy's bind-mounted config can change without changing its Compose service.
+docker compose -f docker-compose.side-infra.yml restart alloy
 %{ else ~}
 # Cleanup potential conflicts where ports might be locked by other Docker Compose instances.
 # 'rm -f' is executed first to ensure cleanup of any lingering network resources attached to existing containers.
