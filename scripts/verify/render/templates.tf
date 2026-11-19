@@ -35,12 +35,15 @@ locals {
       conf_file_name = "api.conf"
     })
     "app_stack-side_infra_setup.sh" = templatefile("${local.repo}/modules/app_stack/scripts/side_infra_setup.sh.tftpl", {
+      api_private_ip         = "10.0.0.20"
       work_dir               = "/home/ubuntu/side-infra"
       alloy_env_name         = "verify"
       alloy_config_content   = local.alloy_config
       redis_version          = "7.2"
       redis_exporter_version = "v1.62.0"
       alloy_version          = "v1.4.0"
+      node_exporter_enabled  = true
+      node_exporter_managed  = true
     })
 
     # modules/monitoring_stack/ec2.tf

@@ -17,4 +17,6 @@ module "app" {
   redis_version          = var.redis_version
   redis_exporter_version = var.redis_exporter_version
   alloy_version          = var.alloy_version
+  node_exporter_enabled  = var.node_exporter_enabled
+  node_exporter_managed  = var.node_exporter_managed
 }
